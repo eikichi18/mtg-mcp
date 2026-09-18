@@ -18,7 +18,7 @@ var (
 )
 
 const (
-	totalToolCount               = 19
+	totalToolCount               = 20
 	totalResourceCount           = 3
 	maxSearchLimit               = 50
 	defaultSplitLimit            = 2
@@ -34,6 +34,8 @@ const (
 	paramSet                     = "set"
 	paramCollectorNumber         = "collector_number"
 	paramFace                    = "face"
+	paramTheme                   = "theme"
+	paramPriceTier               = "price_tier"
 	faceFront                    = "front"
 	faceBack                     = "back"
 	defaultCardImageLanguage     = "en"
@@ -301,41 +303,10 @@ func (s *MTGCommanderServer) registerTools(mcpServer *server.MCPServer) {
 	)
 	mcpServer.AddTool(searchMoxfieldDecksTool, s.handleSearchMoxfieldDecks)
 
-	// Tool 11: Get EDHREC Recommendations
-	edhrecRecommendationsTool := mcp.NewTool(
-		"get_edhrec_recommendations",
-		mcp.WithDescription(
-			"Get EDHREC card recommendations for a specific commander, including high synergy cards, top cards, and statistics",
-		),
-		mcp.WithString(paramCommander,
-			mcp.Required(),
-			mcp.Description("Commander card name (e.g., 'Atraxa, Praetors Voice')"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum cards to show per category (default: 10)"),
-		),
-	)
-	mcpServer.AddTool(edhrecRecommendationsTool, s.handleGetEDHRECRecommendations)
-
-	// Tool 12: Get EDHREC Combos
-	edhrecCombosTool := mcp.NewTool("get_edhrec_combos",
-		mcp.WithDescription("Get popular card combos for a color combination from EDHREC"),
-		mcp.WithString(
-			"colors",
-			mcp.Required(),
-			mcp.Description(
-				"Color combination (w=white, u=blue, b=black, r=red, g=green, e.g., 'wu' for Azorius, 'wubrg' for 5-color)",
-			),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum combos to show (default: 10)"),
-		),
-	)
-	mcpServer.AddTool(edhrecCombosTool, s.handleGetEDHRECCombos)
-
 	s.registerCardImageTool(mcpServer)
 	s.registerArchidektTools(mcpServer)
 	s.registerRulesTools(mcpServer)
+	s.registerEDHRECTools(mcpServer)
 }
 
 // registerCardImageTool registers the get_card_image tool and binds it to the
@@ -503,6 +474,72 @@ func (s *MTGCommanderServer) registerRulesTools(mcpServer *server.MCPServer) {
 		),
 	)
 	mcpServer.AddTool(glossaryTool, s.handleGetGlossaryTerm)
+}
+
+// registerEDHRECTools registers the EDHREC-backed MCP tools (split out of registerTools to keep
+// it within the funlen limit).
+func (s *MTGCommanderServer) registerEDHRECTools(mcpServer *server.MCPServer) {
+	// Tool 11: Get EDHREC Recommendations
+	edhrecRecommendationsTool := mcp.NewTool(
+		"get_edhrec_recommendations",
+		mcp.WithDescription(
+			"Get EDHREC card recommendations for a specific commander, including high synergy cards, top cards, and statistics",
+		),
+		mcp.WithString(paramCommander,
+			mcp.Required(),
+			mcp.Description("Commander card name (e.g., 'Atraxa, Praetors Voice')"),
+		),
+		mcp.WithString(paramTheme,
+			mcp.Description(
+				"EDHREC theme slug for this commander (e.g., 'infect', 'plus-1-plus-1-counters'). "+
+					"Call without a theme first: the response lists the available theme slugs.",
+			),
+		),
+		mcp.WithString(paramPriceTier,
+			mcp.Enum(priceTierBudget, priceTierExpensive),
+			mcp.Description("Restrict recommendations to a price tier: 'budget' or 'expensive'"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum cards to show per category (default: 10, 0 for no limit)"),
+		),
+	)
+	mcpServer.AddTool(edhrecRecommendationsTool, s.handleGetEDHRECRecommendations)
+
+	// Tool 12: Get EDHREC Combos
+	edhrecCombosTool := mcp.NewTool("get_edhrec_combos",
+		mcp.WithDescription("Get popular card combos for a color combination from EDHREC"),
+		mcp.WithString(
+			"colors",
+			mcp.Required(),
+			mcp.Description(
+				"Color combination (w=white, u=blue, b=black, r=red, g=green, e.g., 'wu' for Azorius, 'wubrg' for 5-color)",
+			),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum combos to show (default: 10)"),
+		),
+	)
+	mcpServer.AddTool(edhrecCombosTool, s.handleGetEDHRECCombos)
+
+	// Tool 20: Get EDHREC Set Cards
+	edhrecSetCardsTool := mcp.NewTool(
+		"get_edhrec_set_cards",
+		mcp.WithDescription(
+			"Get the Commander-relevant cards of a Magic set from EDHREC: the new commanders the set "+
+				"introduced with their deck counts, and the set's cards with the share of eligible "+
+				"decks playing them",
+		),
+		mcp.WithString(paramSet,
+			mcp.Required(),
+			mcp.Description(
+				"Short set code, lowercase (e.g., 'rna', 'c21', 'blb'). Full set names are not accepted.",
+			),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum cards to show per list (default: 25, 0 for no limit)"),
+		),
+	)
+	mcpServer.AddTool(edhrecSetCardsTool, s.handleGetEDHRECSetCards)
 }
 
 // registerResources registers MCP resources.

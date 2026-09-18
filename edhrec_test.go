@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +77,7 @@ func TestGetCommanderRecommendations(t *testing.T) {
 	tests := []struct {
 		name          string
 		commanderName string
+		filter        EDHRECRecFilter
 		mockResponse  EDHRECResponse
 		mockStatus    int
 		wantErr       bool
@@ -94,7 +96,6 @@ func TestGetCommanderRecommendations(t *testing.T) {
 							ColorID:   []string{"W", "U", "B", "G"},
 							NumDecks:  50000,
 						},
-						NumDecks: 50000,
 						CardLists: []EDHRECCardList{
 							{
 								Header: "High Synergy Cards",
@@ -103,7 +104,7 @@ func TestGetCommanderRecommendations(t *testing.T) {
 									{
 										Name:      "Doubling Season",
 										Sanitized: "doubling-season",
-										Inclusion: 25000,
+										NumDecks:  25000,
 										Synergy:   0.35,
 									},
 								},
@@ -129,6 +130,38 @@ func TestGetCommanderRecommendations(t *testing.T) {
 			mockStatus:    http.StatusInternalServerError,
 			wantErr:       true,
 		},
+		{
+			name:          "unfiltered URL",
+			commanderName: "Atraxa, Praetors' Voice",
+			filter:        EDHRECRecFilter{},
+			mockStatus:    http.StatusOK,
+			checkURL:      true,
+			expectedURL:   "/commanders/atraxa-praetors-voice.json",
+		},
+		{
+			name:          "theme filter composes URL",
+			commanderName: "Atraxa, Praetors' Voice",
+			filter:        EDHRECRecFilter{Theme: "infect"},
+			mockStatus:    http.StatusOK,
+			checkURL:      true,
+			expectedURL:   "/commanders/atraxa-praetors-voice/infect.json",
+		},
+		{
+			name:          "price tier filter composes URL",
+			commanderName: "Atraxa, Praetors' Voice",
+			filter:        EDHRECRecFilter{PriceTier: "budget"},
+			mockStatus:    http.StatusOK,
+			checkURL:      true,
+			expectedURL:   "/commanders/atraxa-praetors-voice/budget.json",
+		},
+		{
+			name:          "theme and price tier compose in theme-then-tier order",
+			commanderName: "Atraxa, Praetors' Voice",
+			filter:        EDHRECRecFilter{Theme: "infect", PriceTier: "budget"},
+			mockStatus:    http.StatusOK,
+			checkURL:      true,
+			expectedURL:   "/commanders/atraxa-praetors-voice/infect/budget.json",
+		},
 	}
 
 	for _, tt := range tests {
@@ -146,18 +179,74 @@ func TestGetCommanderRecommendations(t *testing.T) {
 			defer server.Close()
 
 			ctx := context.Background()
-			got, err := getCommanderRecommendationsWithURL(ctx, tt.commanderName, server.URL)
+			got, err := getCommanderPageWithURL(ctx, tt.commanderName, tt.filter, server.URL)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("GetCommanderRecommendations() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("getCommanderPageWithURL() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr && got != nil {
-				if got.Card.Name != tt.mockResponse.Container.JSONDict.Card.Name {
-					t.Errorf("GetCommanderRecommendations() card name = %v, want %v",
-						got.Card.Name, tt.mockResponse.Container.JSONDict.Card.Name)
+				if got.Container.JSONDict.Card.Name != tt.mockResponse.Container.JSONDict.Card.Name {
+					t.Errorf("getCommanderPageWithURL() card name = %v, want %v",
+						got.Container.JSONDict.Card.Name, tt.mockResponse.Container.JSONDict.Card.Name)
 				}
+			}
+		})
+	}
+}
+
+func TestGetSetCardsWithURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		setCode     string
+		mockStatus  int
+		wantErr     bool
+		expectedURL string
+	}{
+		{
+			name:        "lowercase code",
+			setCode:     "rna",
+			mockStatus:  http.StatusOK,
+			expectedURL: "/sets/rna.json",
+		},
+		{
+			name:        "uppercase code is lowercased",
+			setCode:     "RNA",
+			mockStatus:  http.StatusOK,
+			expectedURL: "/sets/rna.json",
+		},
+		{
+			name:        "whitespace is trimmed",
+			setCode:     " rna ",
+			mockStatus:  http.StatusOK,
+			expectedURL: "/sets/rna.json",
+		},
+		{
+			name:       "403 forbidden yields an error",
+			setCode:    "notaset",
+			mockStatus: http.StatusForbidden,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.expectedURL != "" && !strings.HasSuffix(r.URL.Path, tt.expectedURL) {
+					t.Errorf("Request URL = %v, want suffix %v", r.URL.Path, tt.expectedURL)
+				}
+
+				w.WriteHeader(tt.mockStatus)
+				if tt.mockStatus == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(EDHRECResponse{Header: "Ravnica Allegiance"})
+				}
+			}))
+			defer server.Close()
+
+			_, err := getSetCardsWithURL(context.Background(), tt.setCode, server.URL)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getSetCardsWithURL() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -233,27 +322,30 @@ func TestGetCombosForColors(t *testing.T) {
 }
 
 func TestFormatCommanderRecsForDisplay(t *testing.T) {
-	data := &EDHRECData{
-		Card: EDHRECCardInfo{
-			Name:     "Test Commander",
-			ColorID:  []string{"W", "U"},
-			NumDecks: 1000,
-		},
-		NumDecks: 1000,
-		CardLists: []EDHRECCardList{
-			{
-				Header: "High Synergy Cards",
-				CardViews: []EDHRECCardView{
+	page := &EDHRECResponse{
+		Container: EDHRECContainer{
+			JSONDict: EDHRECData{
+				Card: EDHRECCardInfo{
+					Name:     "Test Commander",
+					ColorID:  []string{"W", "U"},
+					NumDecks: 1000,
+				},
+				CardLists: []EDHRECCardList{
 					{
-						Name:      "Card 1",
-						Inclusion: 500,
-						Synergy:   0.35,
-						Salt:      1.5,
-					},
-					{
-						Name:      "Card 2",
-						Inclusion: 400,
-						Synergy:   0.25,
+						Header: "High Synergy Cards",
+						CardViews: []EDHRECCardView{
+							{
+								Name:     "Card 1",
+								NumDecks: 500,
+								Synergy:  0.35,
+								Salt:     1.5,
+							},
+							{
+								Name:     "Card 2",
+								NumDecks: 400,
+								Synergy:  0.25,
+							},
+						},
 					},
 				},
 			},
@@ -262,14 +354,14 @@ func TestFormatCommanderRecsForDisplay(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		data          *EDHRECData
+		page          *EDHRECResponse
 		limit         int
 		wantContains  []string
 		wantCardCount int
 	}{
 		{
 			name:  "with limit",
-			data:  data,
+			page:  page,
 			limit: 1,
 			wantContains: []string{
 				"Test Commander",
@@ -282,7 +374,7 @@ func TestFormatCommanderRecsForDisplay(t *testing.T) {
 		},
 		{
 			name:  "without limit",
-			data:  data,
+			page:  page,
 			limit: 0,
 			wantContains: []string{
 				"Test Commander",
@@ -295,7 +387,7 @@ func TestFormatCommanderRecsForDisplay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FormatCommanderRecsForDisplay(tt.data, tt.limit)
+			got := FormatCommanderRecsForDisplay(tt.page, EDHRECRecFilter{}, tt.limit)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(got, want) {
@@ -312,6 +404,183 @@ func TestFormatCommanderRecsForDisplay(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatCommanderRecsForDisplayDeckStats(t *testing.T) {
+	t.Run("nonzero total decks shows percentage", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					Card: EDHRECCardInfo{Name: "Test Commander", NumDecks: 1000},
+					CardLists: []EDHRECCardList{
+						{Header: "Top Cards", CardViews: []EDHRECCardView{{Name: "Sol Ring", NumDecks: 500}}},
+					},
+				},
+			},
+		}
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
+		if !strings.Contains(got, "Decks: 500 of 1000 (50.0%)") {
+			t.Errorf("expected 50.0%% deck stat, got:\n%s", got)
+		}
+		if strings.Contains(got, "NaN") {
+			t.Errorf("output must never contain NaN, got:\n%s", got)
+		}
+	})
+
+	t.Run("zero total decks shows raw count only", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					Card: EDHRECCardInfo{Name: "Test Commander", NumDecks: 0},
+					CardLists: []EDHRECCardList{
+						{Header: "Top Cards", CardViews: []EDHRECCardView{{Name: "Sol Ring", NumDecks: 500}}},
+					},
+				},
+			},
+		}
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
+		if !strings.Contains(got, "Decks: 500") {
+			t.Errorf("expected raw deck count, got:\n%s", got)
+		}
+		if strings.Contains(got, "NaN") || strings.Contains(got, "%") {
+			t.Errorf("zero denominator must not print a percentage, got:\n%s", got)
+		}
+	})
+}
+
+func TestFormatCommanderRecsForDisplayThemes(t *testing.T) {
+	tags := make([]EDHRECTagCount, 20)
+	for i := range tags {
+		tags[i] = EDHRECTagCount{
+			Slug: fmt.Sprintf("theme-%02d", i), Value: fmt.Sprintf("Theme %02d", i), Count: 100 - i,
+		}
+	}
+
+	page := &EDHRECResponse{
+		Header:    "Test Commander (Commander)",
+		TagCounts: tags,
+		Container: EDHRECContainer{
+			JSONDict: EDHRECData{Card: EDHRECCardInfo{Name: "Test Commander"}},
+		},
+	}
+
+	t.Run("unfiltered shows available themes", func(t *testing.T) {
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
+		if !strings.Contains(got, "## Available Themes") {
+			t.Error("expected Available Themes section")
+		}
+		if !strings.Contains(got, "theme-00") {
+			t.Error("expected highest-count theme slug")
+		}
+		if !strings.Contains(got, "and 5 more themes") {
+			t.Errorf("expected omitted-theme count, got:\n%s", got)
+		}
+		if strings.Contains(got, "theme-15") {
+			t.Error("16th theme slug should not be listed")
+		}
+	})
+
+	t.Run("filtered suppresses available themes", func(t *testing.T) {
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{Theme: "infect"}, 10)
+		if strings.Contains(got, "## Available Themes") {
+			t.Error("Available Themes section should be suppressed when a filter is active")
+		}
+	})
+}
+
+func TestFormatCommanderRecsForDisplayHeader(t *testing.T) {
+	t.Run("uses page header when present", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Header: "X (Commander) - Budget Infect",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{Card: EDHRECCardInfo{Name: "X"}},
+			},
+		}
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{Theme: "infect", PriceTier: "budget"}, 10)
+		if !strings.Contains(got, "X (Commander) - Budget Infect") {
+			t.Errorf("expected page header in title, got:\n%s", got)
+		}
+	})
+
+	t.Run("falls back to card name when header is empty", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{Card: EDHRECCardInfo{Name: "Fallback Commander"}},
+			},
+		}
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
+		if !strings.Contains(got, "Fallback Commander") {
+			t.Errorf("expected card name fallback in title, got:\n%s", got)
+		}
+	})
+}
+
+func TestFormatSetCardsForDisplay(t *testing.T) {
+	t.Run("commander and card views", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Header: "Ravnica Allegiance",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header:    "Commanders",
+							CardViews: []EDHRECCardView{{Name: "Teysa Karlov", NumDecks: 21469, PotentialDecks: 0}},
+						},
+						{
+							Header: "Cards",
+							CardViews: []EDHRECCardView{
+								{Name: "Smothering Tithe", NumDecks: 500, PotentialDecks: 2000},
+							},
+						},
+					},
+				},
+			},
+		}
+		got := FormatSetCardsForDisplay(page, "rna", 25)
+		if !strings.Contains(got, "(rna)") {
+			t.Errorf("expected set code in title, got:\n%s", got)
+		}
+		if strings.Contains(got, "Decks: 21469 of") || !strings.Contains(got, "Decks: 21469\n") {
+			t.Errorf("commander view should show a bare deck count, got:\n%s", got)
+		}
+		if !strings.Contains(got, "Decks: 500 of 2000 (25.0%)") {
+			t.Errorf("card view should show a percentage, got:\n%s", got)
+		}
+	})
+
+	t.Run("truncation and unlimited", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header: "Cards",
+							CardViews: []EDHRECCardView{
+								{Name: "Card One"},
+								{Name: "Card Two"},
+								{Name: "Card Three"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		limited := FormatSetCardsForDisplay(page, "rna", 1)
+		if !strings.Contains(limited, "and 2 more cards") {
+			t.Errorf("expected truncation suffix, got:\n%s", limited)
+		}
+
+		unlimited := FormatSetCardsForDisplay(page, "rna", 0)
+		for _, want := range []string{"Card One", "Card Two", "Card Three"} {
+			if !strings.Contains(unlimited, want) {
+				t.Errorf("limit 0 should show all cards, missing %q in:\n%s", want, unlimited)
+			}
+		}
+		if strings.Contains(unlimited, "more cards") {
+			t.Errorf("limit 0 should not truncate, got:\n%s", unlimited)
+		}
+	})
 }
 
 func TestFormatCombosForDisplay(t *testing.T) {
@@ -466,17 +735,20 @@ func TestGetTopCardsForCategory(t *testing.T) {
 
 func TestFormatCommanderRecsForDisplayEdgeCases(t *testing.T) {
 	t.Run("empty card list skipped", func(t *testing.T) {
-		data := &EDHRECData{
-			Card:     EDHRECCardInfo{Name: "Test Commander"},
-			NumDecks: 100,
-			CardLists: []EDHRECCardList{
-				{Header: "Skipped Section", CardViews: []EDHRECCardView{}},
-				{Header: "Non-Empty Section", CardViews: []EDHRECCardView{
-					{Name: "Sol Ring", Inclusion: 90},
-				}},
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					Card: EDHRECCardInfo{Name: "Test Commander", NumDecks: 100},
+					CardLists: []EDHRECCardList{
+						{Header: "Skipped Section", CardViews: []EDHRECCardView{}},
+						{Header: "Non-Empty Section", CardViews: []EDHRECCardView{
+							{Name: "Sol Ring", NumDecks: 90},
+						}},
+					},
+				},
 			},
 		}
-		got := FormatCommanderRecsForDisplay(data, 10)
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
 		if strings.Contains(got, "Skipped Section") {
 			t.Error("FormatCommanderRecsForDisplay() should skip card lists with no cards")
 		}
@@ -486,16 +758,19 @@ func TestFormatCommanderRecsForDisplayEdgeCases(t *testing.T) {
 	})
 
 	t.Run("zero synergy and zero salt omitted", func(t *testing.T) {
-		data := &EDHRECData{
-			Card:     EDHRECCardInfo{Name: "Test Commander"},
-			NumDecks: 100,
-			CardLists: []EDHRECCardList{
-				{Header: "Top Cards", CardViews: []EDHRECCardView{
-					{Name: "Sol Ring", Inclusion: 90, Synergy: 0, Salt: 0},
-				}},
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					Card: EDHRECCardInfo{Name: "Test Commander", NumDecks: 100},
+					CardLists: []EDHRECCardList{
+						{Header: "Top Cards", CardViews: []EDHRECCardView{
+							{Name: "Sol Ring", NumDecks: 90, Synergy: 0, Salt: 0},
+						}},
+					},
+				},
 			},
 		}
-		got := FormatCommanderRecsForDisplay(data, 10)
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 10)
 		if strings.Contains(got, "Synergy:") {
 			t.Error("FormatCommanderRecsForDisplay() should omit Synergy line when zero")
 		}
@@ -505,20 +780,85 @@ func TestFormatCommanderRecsForDisplayEdgeCases(t *testing.T) {
 	})
 
 	t.Run("truncation suffix shown", func(t *testing.T) {
-		data := &EDHRECData{
-			Card:     EDHRECCardInfo{Name: "Test Commander"},
-			NumDecks: 100,
-			CardLists: []EDHRECCardList{
-				{Header: "Top Cards", CardViews: []EDHRECCardView{
-					{Name: "Sol Ring", Inclusion: 90},
-					{Name: "Arcane Signet", Inclusion: 80},
-					{Name: "Command Tower", Inclusion: 70},
-				}},
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					Card: EDHRECCardInfo{Name: "Test Commander", NumDecks: 100},
+					CardLists: []EDHRECCardList{
+						{Header: "Top Cards", CardViews: []EDHRECCardView{
+							{Name: "Sol Ring", NumDecks: 90},
+							{Name: "Arcane Signet", NumDecks: 80},
+							{Name: "Command Tower", NumDecks: 70},
+						}},
+					},
+				},
 			},
 		}
-		got := FormatCommanderRecsForDisplay(data, 1)
+		got := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 1)
 		if !strings.Contains(got, "and 2 more cards") {
 			t.Errorf("FormatCommanderRecsForDisplay() missing truncation suffix, got:\n%s", got)
 		}
 	})
+}
+
+func TestRecFilterFromArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]any
+		want    EDHRECRecFilter
+		wantErr bool
+	}{
+		{
+			name: "no args",
+			args: map[string]any{},
+			want: EDHRECRecFilter{},
+		},
+		{
+			name: "price tier is lowercased",
+			args: map[string]any{"price_tier": "Budget"},
+			want: EDHRECRecFilter{PriceTier: "budget"},
+		},
+		{
+			name:    "invalid price tier names both valid values",
+			args:    map[string]any{"price_tier": "middle"},
+			wantErr: true,
+		},
+		{
+			name:    "wrong-typed price tier is an error",
+			args:    map[string]any{"price_tier": 42},
+			wantErr: true,
+		},
+		{
+			name: "theme is trimmed and lowercased",
+			args: map[string]any{"theme": " Infect "},
+			want: EDHRECRecFilter{Theme: "infect"},
+		},
+		{
+			name:    "wrong-typed theme is an error",
+			args:    map[string]any{"theme": true},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := recFilterFromArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("recFilterFromArgs() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if tt.name == "invalid price tier names both valid values" {
+					missingBudget := !strings.Contains(err.Error(), priceTierBudget)
+					missingExpensive := !strings.Contains(err.Error(), priceTierExpensive)
+					if missingBudget || missingExpensive {
+						t.Errorf("error should name both valid tiers, got: %v", err)
+					}
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("recFilterFromArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
 }

@@ -645,12 +645,13 @@ func TestHandleGetEDHRECRecommendations(t *testing.T) {
 		resp := EDHRECResponse{
 			Container: EDHRECContainer{
 				JSONDict: EDHRECData{
-					Card:     EDHRECCardInfo{Name: "Atraxa, Praetors' Voice", ColorID: []string{"W", "U", "B", "G"}},
-					NumDecks: 1000,
+					Card: EDHRECCardInfo{
+						Name: "Atraxa, Praetors' Voice", ColorID: []string{"W", "U", "B", "G"}, NumDecks: 1000,
+					},
 					CardLists: []EDHRECCardList{
 						{
 							Header:    "High Synergy Cards",
-							CardViews: []EDHRECCardView{{Name: "Doubling Season", Inclusion: 500}},
+							CardViews: []EDHRECCardView{{Name: "Doubling Season", NumDecks: 500}},
 						},
 					},
 				},
@@ -716,4 +717,118 @@ func TestHandleGetEDHRECCombos(t *testing.T) {
 			t.Error("expected error result")
 		}
 	})
+}
+
+func TestHandleGetEDHRECSetCards(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		resp := EDHRECResponse{
+			Header: "Ravnica Allegiance",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header:    "Commanders",
+							CardViews: []EDHRECCardView{{Name: "Teysa Karlov", NumDecks: 21469}},
+						},
+					},
+				},
+			},
+		}
+		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusOK, resp)}
+		res, err := s.handleGetEDHRECSetCards(context.Background(), toolRequest(map[string]any{"set": "rna"}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(resultText(t, res), "Teysa Karlov") {
+			t.Errorf("expected card name in output:\n%s", resultText(t, res))
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusForbidden, nil)}
+		res, _ := s.handleGetEDHRECSetCards(context.Background(), toolRequest(map[string]any{"set": "notaset"}))
+		if !res.IsError {
+			t.Error("expected error result")
+		}
+		if !strings.Contains(resultText(t, res), "notaset") {
+			t.Errorf("expected set code in error message:\n%s", resultText(t, res))
+		}
+	})
+}
+
+func TestHandleGetEDHRECRecommendationsThemeHint(t *testing.T) {
+	t.Run("invalid theme suggests the real slug", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/commanders/atraxa-praetors-voice/infekt.json"):
+				w.WriteHeader(http.StatusForbidden)
+			case strings.HasSuffix(r.URL.Path, "/commanders/atraxa-praetors-voice.json"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(EDHRECResponse{
+					TagCounts: []EDHRECTagCount{{Slug: "infect", Value: "Infect", Count: 4066}},
+				})
+			default:
+				w.WriteHeader(http.StatusForbidden)
+			}
+		}))
+		defer ts.Close()
+
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+		res, err := s.handleGetEDHRECRecommendations(context.Background(), toolRequest(map[string]any{
+			"commander": "Atraxa, Praetors' Voice",
+			"theme":     "infekt",
+		}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !res.IsError {
+			t.Fatal("expected error result")
+		}
+		text := resultText(t, res)
+		if !strings.Contains(text, "infect") || !strings.Contains(text, "4066") {
+			t.Errorf("expected theme hint naming infect (4066 decks), got:\n%s", text)
+		}
+	})
+
+	t.Run("valid-looking theme that still fails does not misreport an outage", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer ts.Close()
+
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+		res, err := s.handleGetEDHRECRecommendations(context.Background(), toolRequest(map[string]any{
+			"commander": "Atraxa, Praetors' Voice",
+			"theme":     "infect",
+		}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !res.IsError {
+			t.Fatal("expected error result")
+		}
+		if !strings.Contains(resultText(t, res), "Failed to fetch EDHREC recommendations") {
+			t.Errorf("expected generic failure message, got:\n%s", resultText(t, res))
+		}
+	})
+}
+
+func TestHandleGetEDHRECRecommendationsBadPriceTier(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("no HTTP request should be made for an invalid price tier")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+	res, err := s.handleGetEDHRECRecommendations(context.Background(), toolRequest(map[string]any{
+		"commander":  "Atraxa, Praetors' Voice",
+		"price_tier": "middle",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.IsError {
+		t.Error("expected error result")
+	}
 }

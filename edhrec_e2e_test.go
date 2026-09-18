@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,7 +28,7 @@ func TestEDHRECCommanderRecommendationsE2E(t *testing.T) {
 	}
 
 	// Note: EDHREC data might be empty for some commanders or during API updates
-	if data.NumDecks == 0 {
+	if data.Card.NumDecks == 0 {
 		t.Logf(
 			"Warning: EDHREC returned 0 decks for %s (API might be updating or commander not tracked)",
 			data.Card.Name,
@@ -52,7 +53,7 @@ func TestEDHRECCommanderRecommendationsE2E(t *testing.T) {
 	}
 
 	t.Logf("✓ Successfully fetched recommendations for %s (%d decks, %d card lists)",
-		data.Card.Name, data.NumDecks, len(data.CardLists))
+		data.Card.Name, data.Card.NumDecks, len(data.CardLists))
 }
 
 // TestEDHRECCombosE2E tests real EDHREC API for color combos.
@@ -137,19 +138,21 @@ func TestEDHRECFormatOutputE2E(t *testing.T) {
 	defer cancel()
 
 	// Fetch real data
-	data, err := GetCommanderRecommendations(ctx, "Atraxa, Praetors' Voice")
+	page, err := getCommanderPageWithURL(ctx, "Atraxa, Praetors' Voice", EDHRECRecFilter{}, defaultEDHRECBaseURL)
 	if err != nil {
-		t.Fatalf("GetCommanderRecommendations() failed: %v", err)
+		t.Fatalf("getCommanderPageWithURL() failed: %v", err)
 	}
 
+	data := page.Container.JSONDict
+
 	// Skip if no data returned
-	if data.NumDecks == 0 && len(data.CardLists) == 0 {
+	if data.Card.NumDecks == 0 && len(data.CardLists) == 0 {
 		t.Skip("Skipping format test due to empty EDHREC data")
 		return
 	}
 
 	// Test formatting with limit
-	output := FormatCommanderRecsForDisplay(data, 5)
+	output := FormatCommanderRecsForDisplay(page, EDHRECRecFilter{}, 5)
 	if output == "" {
 		t.Error("Expected non-empty formatted output")
 	}
@@ -168,6 +171,111 @@ func TestEDHRECFormatOutputE2E(t *testing.T) {
 	}
 
 	t.Logf("✓ Successfully formatted commander recommendations")
+}
+
+// TestEDHRECThemeAndBudgetFilterE2E proves the composed theme+tier path is real and narrows the
+// deck pool: unfiltered > theme-only > theme+tier.
+func TestEDHRECThemeAndBudgetFilterE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const commander = "Atraxa, Praetors' Voice"
+
+	unfiltered, err := getCommanderPageWithURL(ctx, commander, EDHRECRecFilter{}, defaultEDHRECBaseURL)
+	if err != nil {
+		t.Fatalf("unfiltered getCommanderPageWithURL() failed: %v", err)
+	}
+
+	themeOnly, err := getCommanderPageWithURL(ctx, commander, EDHRECRecFilter{Theme: "infect"}, defaultEDHRECBaseURL)
+	if err != nil {
+		t.Fatalf("theme-only getCommanderPageWithURL() failed: %v", err)
+	}
+
+	combined, err := getCommanderPageWithURL(
+		ctx, commander, EDHRECRecFilter{Theme: "infect", PriceTier: "budget"}, defaultEDHRECBaseURL,
+	)
+	if err != nil {
+		t.Fatalf("combined getCommanderPageWithURL() failed: %v", err)
+	}
+
+	unfilteredDecks := unfiltered.Container.JSONDict.Card.NumDecks
+	themeOnlyDecks := themeOnly.Container.JSONDict.Card.NumDecks
+	combinedDecks := combined.Container.JSONDict.Card.NumDecks
+
+	if unfilteredDecks <= 0 || themeOnlyDecks <= 0 || combinedDecks <= 0 {
+		t.Fatalf("expected all deck counts to be positive: unfiltered=%d theme=%d combined=%d",
+			unfilteredDecks, themeOnlyDecks, combinedDecks)
+	}
+
+	if combinedDecks >= themeOnlyDecks || themeOnlyDecks >= unfilteredDecks {
+		t.Errorf("expected combined < themeOnly < unfiltered, got combined=%d themeOnly=%d unfiltered=%d",
+			combinedDecks, themeOnlyDecks, unfilteredDecks)
+	}
+}
+
+// TestEDHRECInvalidThemeE2E confirms an unrouted theme slug surfaces as an error, not a decode
+// panic on EDHREC's XML error body.
+func TestEDHRECInvalidThemeE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := getCommanderPageWithURL(
+		ctx, "Atraxa, Praetors' Voice", EDHRECRecFilter{Theme: "not-a-real-theme"}, defaultEDHRECBaseURL,
+	)
+	if err == nil {
+		t.Fatal("expected an error for an invalid theme slug")
+	}
+}
+
+// TestEDHRECSetCardsE2E fetches a real set page and confirms the formatter never emits NaN.
+func TestEDHRECSetCardsE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	page, err := GetSetCards(ctx, "rna")
+	if err != nil {
+		t.Fatalf("GetSetCards() failed: %v", err)
+	}
+
+	if page.Header != "Ravnica Allegiance" {
+		t.Errorf("expected header %q, got %q", "Ravnica Allegiance", page.Header)
+	}
+
+	if len(page.Container.JSONDict.CardLists) == 0 {
+		t.Fatal("expected at least one cardlist")
+	}
+
+	foundPotentialDecks := false
+	for _, cardList := range page.Container.JSONDict.CardLists {
+		for _, card := range cardList.CardViews {
+			if card.PotentialDecks > 0 {
+				foundPotentialDecks = true
+			}
+		}
+	}
+	if !foundPotentialDecks {
+		t.Error("expected at least one cardview with PotentialDecks > 0")
+	}
+
+	output := FormatSetCardsForDisplay(page, "rna", 5)
+	if output == "" {
+		t.Error("expected non-empty formatted set output")
+	}
+	if strings.Contains(output, "NaN") {
+		t.Errorf("set output must never contain NaN, got:\n%s", output)
+	}
 }
 
 // contains checks if a string contains a substring.
