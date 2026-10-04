@@ -252,7 +252,7 @@ func TestGetSetCardsWithURL(t *testing.T) {
 	}
 }
 
-func TestResolveComboIdentity(t *testing.T) {
+func TestResolveComboSlug(t *testing.T) {
 	resolves := []struct {
 		colors string
 		want   string
@@ -273,21 +273,21 @@ func TestResolveComboIdentity(t *testing.T) {
 	}
 	for _, tt := range resolves {
 		t.Run("resolves "+tt.colors, func(t *testing.T) {
-			got, err := resolveComboIdentity(tt.colors)
+			got, err := resolveComboSlug(tt.colors)
 			if err != nil {
-				t.Fatalf("resolveComboIdentity(%q) error = %v", tt.colors, err)
+				t.Fatalf("resolveComboSlug(%q) error = %v", tt.colors, err)
 			}
 			if got != tt.want {
-				t.Errorf("resolveComboIdentity(%q) = %q, want %q", tt.colors, got, tt.want)
+				t.Errorf("resolveComboSlug(%q) = %q, want %q", tt.colors, got, tt.want)
 			}
 		})
 	}
 
 	for _, colors := range []string{"", "   ", "xyz", "wwu", "cw", "w u", "azorius-x"} {
 		t.Run(fmt.Sprintf("rejects %q", colors), func(t *testing.T) {
-			got, err := resolveComboIdentity(colors)
+			got, err := resolveComboSlug(colors)
 			if err == nil {
-				t.Fatalf("resolveComboIdentity(%q) = %q, want error", colors, got)
+				t.Fatalf("resolveComboSlug(%q) = %q, want error", colors, got)
 			}
 			if !strings.Contains(err.Error(), fmt.Sprintf("%q", colors)) {
 				t.Errorf("error does not quote the input %q: %v", colors, err)
@@ -299,9 +299,10 @@ func TestResolveComboIdentity(t *testing.T) {
 	}
 }
 
-// TestComboIdentitiesMatchEDHRECIndex checks the identity table against independent oracles: the
-// slugs linked from pages/combos.json (snapshot 2026-10-04) and every WUBRG subset plus "c".
-func TestComboIdentitiesMatchEDHRECIndex(t *testing.T) {
+// TestColorIdentitiesMatchEDHRECIndex checks the identity table against independent oracles: the
+// slugs linked from pages/combos.json (snapshot 2026-10-04), every WUBRG subset plus "c", and the
+// top-cards slug rule (EDHREC's top pages drop the "mono-" prefix of the five mono-colour names).
+func TestColorIdentitiesMatchEDHRECIndex(t *testing.T) {
 	indexSlugs := []string{
 		"abzan", "azorius", "bant", "boros", "colorless", "dimir", "dune-brood", "esper", "five-color",
 		"glint-eye", "golgari", "grixis", "gruul", "ink-treader", "izzet", "jeskai", "jund", "mardu",
@@ -320,18 +321,22 @@ func TestComboIdentitiesMatchEDHRECIndex(t *testing.T) {
 		wantLetters[letters.String()] = true
 	}
 
-	identities := comboIdentities()
+	identities := colorIdentities()
 	gotSlugs := map[string]bool{}
 	gotLetters := map[string]bool{}
 	for _, identity := range identities {
-		if gotSlugs[identity.slug] {
-			t.Errorf("duplicate slug %q", identity.slug)
+		if gotSlugs[identity.name] {
+			t.Errorf("duplicate name %q", identity.name)
 		}
 		if gotLetters[identity.letters] {
 			t.Errorf("duplicate letters %q", identity.letters)
 		}
-		gotSlugs[identity.slug] = true
+		gotSlugs[identity.name] = true
 		gotLetters[identity.letters] = true
+
+		if wantTop := strings.TrimPrefix(identity.name, "mono-"); identity.topSlug != wantTop {
+			t.Errorf("identity %q has top slug %q, want %q", identity.name, identity.topSlug, wantTop)
+		}
 	}
 
 	if len(identities) != len(indexSlugs) {
@@ -352,6 +357,109 @@ func TestComboIdentitiesMatchEDHRECIndex(t *testing.T) {
 			t.Errorf("table key %q is not canonical WUBRG letters", letters)
 		}
 	}
+}
+
+func TestTopCardsSlugFromArgs(t *testing.T) {
+	resolves := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"list salt", map[string]any{"list": "salt"}, "salt"},
+		{"list trimmed and lowercased", map[string]any{"list": " Creatures "}, "creatures"},
+		{"list year", map[string]any{"list": "year"}, "year"},
+		{"color letters", map[string]any{"color": "wu"}, "azorius"},
+		{"color mono letter", map[string]any{"color": "W"}, "white"},
+		{"color mono name", map[string]any{"color": "mono-white"}, "white"},
+		{"color colorless", map[string]any{"color": "c"}, "colorless"},
+		{"color multicolor", map[string]any{"color": "Multicolor"}, "multicolor"},
+		{"color five-color", map[string]any{"color": "five-color"}, "five-color"},
+		{"color unordered letters", map[string]any{"color": "gur"}, "temur"},
+	}
+	for _, tt := range resolves {
+		t.Run("resolves "+tt.name, func(t *testing.T) {
+			got, err := topCardsSlugFromArgs(tt.args)
+			if err != nil {
+				t.Fatalf("topCardsSlugFromArgs(%v) error = %v", tt.args, err)
+			}
+			if got != tt.want {
+				t.Errorf("topCardsSlugFromArgs(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+
+	rejects := []struct {
+		name         string
+		args         map[string]any
+		wantContains []string
+	}{
+		{"neither", map[string]any{}, nil},
+		{"both", map[string]any{"list": "salt", "color": "wu"}, nil},
+		{"unknown list", map[string]any{"list": "bogus"}, []string{`"bogus"`, "game-changers"}},
+		{"unknown color", map[string]any{"color": "xyz"}, []string{`"color"`, `"xyz"`, "glint-eye", "multicolor"}},
+		{"list wrong type", map[string]any{"list": float64(42)}, nil},
+		{"color wrong type", map[string]any{"color": true}, nil},
+		{"blank color", map[string]any{"color": "   "}, nil},
+	}
+	for _, tt := range rejects {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			got, err := topCardsSlugFromArgs(tt.args)
+			if err == nil {
+				t.Fatalf("topCardsSlugFromArgs(%v) = %q, want error", tt.args, got)
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not contain %s: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGetTopCardsPageWithURL(t *testing.T) {
+	t.Run("requests the slug page and decodes it", func(t *testing.T) {
+		mock := EDHRECResponse{
+			Header: "Top Azorius Cards",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{Header: "Top Cards", CardViews: []EDHRECCardView{{Name: "Sol Ring"}}},
+						{Header: "Creatures", CardViews: []EDHRECCardView{{Name: "Esper Sentinel"}}},
+					},
+				},
+			},
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/top/azorius.json") {
+				t.Errorf("Request URL = %v, want suffix /top/azorius.json", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(mock)
+		}))
+		defer server.Close()
+
+		page, err := getTopCardsPageWithURL(context.Background(), "azorius", server.URL)
+		if err != nil {
+			t.Fatalf("getTopCardsPageWithURL() error = %v", err)
+		}
+		if page.Header != "Top Azorius Cards" {
+			t.Errorf("header = %q, want %q", page.Header, "Top Azorius Cards")
+		}
+		lists := page.Container.JSONDict.CardLists
+		if len(lists) != 2 || lists[1].Header != "Creatures" || lists[1].CardViews[0].Name != "Esper Sentinel" {
+			t.Errorf("cardlists not decoded: %+v", lists)
+		}
+	})
+
+	t.Run("403 returns an error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer server.Close()
+
+		if _, err := getTopCardsPageWithURL(context.Background(), "mono-white", server.URL); err == nil {
+			t.Error("expected an error for a 403 page")
+		}
+	})
 }
 
 func TestGetCombosForIdentityWithURL(t *testing.T) {
@@ -731,80 +839,91 @@ func TestFormatCombosForDisplay(t *testing.T) {
 	}
 }
 
-func TestGetTopCardsForCategory(t *testing.T) {
-	tests := []struct {
-		name       string
-		category   string
-		page       int
-		mockStatus int
-		mockResp   EDHRECResponse
-		wantCards  int
-		wantErr    bool
-	}{
-		{
-			name:       "successful request flattens card lists",
-			category:   "salt",
-			page:       0,
-			mockStatus: http.StatusOK,
-			mockResp: EDHRECResponse{
-				Container: EDHRECContainer{
-					JSONDict: EDHRECData{
-						CardLists: []EDHRECCardList{
-							{
-								Header: "Saltiest Cards",
-								CardViews: []EDHRECCardView{
-									{Name: "Armageddon"},
-									{Name: "Stasis"},
-								},
-							},
-							{
-								Header: "More Salt",
-								CardViews: []EDHRECCardView{
-									{Name: "Winter Orb"},
-								},
+func TestFormatTopCardsForDisplay(t *testing.T) {
+	colorPage := &EDHRECResponse{
+		Header: "Top Azorius Cards",
+		Container: EDHRECContainer{
+			JSONDict: EDHRECData{
+				CardLists: []EDHRECCardList{
+					{
+						Header: "Top Cards",
+						CardViews: []EDHRECCardView{
+							{Name: "Swords to Plowshares", NumDecks: 603382, PotentialDecks: 2339647},
+							{Name: "Counterspell", NumDecks: 461071, PotentialDecks: 2339647},
+							{Name: "Teferi's Protection", NumDecks: 444642, PotentialDecks: 2339647},
+						},
+					},
+					{
+						Header:    "Creatures",
+						CardViews: []EDHRECCardView{{Name: "Esper Sentinel", NumDecks: 1000, PotentialDecks: 4000}},
+					},
+					{Header: "Empty", CardViews: []EDHRECCardView{}},
+				},
+			},
+		},
+	}
+
+	t.Run("colour page with limit", func(t *testing.T) {
+		got := FormatTopCardsForDisplay(colorPage, "azorius", 2)
+		for _, want := range []string{
+			"# EDHREC Top Azorius Cards (azorius)",
+			"## Top Cards (3 cards)",
+			"Swords to Plowshares",
+			"Counterspell",
+			"Decks: 603382 of 2339647 (25.8%)",
+			"*...and 1 more cards*",
+			"## Creatures (1 cards)",
+			"Esper Sentinel",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+		for _, unwanted := range []string{"Teferi's Protection", "## Empty", "NaN"} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("unexpected %q in:\n%s", unwanted, got)
+			}
+		}
+	})
+
+	t.Run("salt page with unheaded list", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Header: "Top 100 Saltiest Cards",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header: "",
+							CardViews: []EDHRECCardView{
+								{Name: "Stasis", NumDecks: 18097, PotentialDecks: 0, Salt: 3.0572},
 							},
 						},
 					},
 				},
 			},
-			wantCards: 3,
-			wantErr:   false,
-		},
-		{
-			name:       "404 not found",
-			category:   "missing",
-			page:       1,
-			mockStatus: http.StatusNotFound,
-			wantErr:    true,
-		},
-		{
-			name:       "500 server error",
-			category:   "salt",
-			page:       0,
-			mockStatus: http.StatusInternalServerError,
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tt.mockStatus)
-				if tt.mockStatus == http.StatusOK {
-					_ = json.NewEncoder(w).Encode(tt.mockResp)
-				}
-			}))
-			defer server.Close()
-
-			got, err := getTopCardsForCategoryWithURL(context.Background(), tt.category, tt.page, server.URL)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("getTopCardsForCategoryWithURL() error = %v, wantErr %v", err, tt.wantErr)
+		}
+		got := FormatTopCardsForDisplay(page, "salt", 10)
+		for _, want := range []string{"- Decks: 18097\n", "Salt Score: 3.06/4.0"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
 			}
-			if !tt.wantErr && len(got) != tt.wantCards {
-				t.Errorf("got %d cards, want %d", len(got), tt.wantCards)
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(line, "## ") {
+				t.Errorf("unheaded list must not get a heading, got line %q in:\n%s", line, got)
 			}
-		})
-	}
+		}
+	})
+
+	t.Run("limit 0 shows all cards", func(t *testing.T) {
+		got := FormatTopCardsForDisplay(colorPage, "azorius", 0)
+		if !strings.Contains(got, "Teferi's Protection") {
+			t.Errorf("limit 0 should show every card, got:\n%s", got)
+		}
+		if strings.Contains(got, "more cards") {
+			t.Errorf("limit 0 should not truncate, got:\n%s", got)
+		}
+	})
 }
 
 func TestFormatCommanderRecsForDisplayEdgeCases(t *testing.T) {

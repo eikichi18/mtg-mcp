@@ -294,6 +294,79 @@ func TestEDHRECSetCardsE2E(t *testing.T) {
 	}
 }
 
+// TestEDHRECTopCardsE2E resolves get_edhrec_top_cards arguments and fetches the real pages: one slug
+// verified live when the list was written (salt) and two that were not (equipment, blue).
+func TestEDHRECTopCardsE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	fetch := func(t *testing.T, args map[string]any) *EDHRECResponse {
+		t.Helper()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		slug, err := topCardsSlugFromArgs(args)
+		if err != nil {
+			t.Fatalf("topCardsSlugFromArgs(%v) failed: %v", args, err)
+		}
+
+		page, err := getTopCardsPageWithURL(ctx, slug, defaultEDHRECBaseURL)
+		if err != nil {
+			t.Fatalf("getTopCardsPageWithURL(%q) failed: %v", slug, err)
+		}
+
+		return page
+	}
+
+	hasNamedCard := func(page *EDHRECResponse) bool {
+		for _, cardList := range page.Container.JSONDict.CardLists {
+			for _, card := range cardList.CardViews {
+				if card.Name != "" {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	t.Run("salt", func(t *testing.T) {
+		page := fetch(t, map[string]any{"list": "salt"})
+
+		hasCards, hasSalt := false, false
+		for _, cardList := range page.Container.JSONDict.CardLists {
+			if len(cardList.CardViews) > 0 {
+				hasCards = true
+			}
+			for _, card := range cardList.CardViews {
+				if card.Salt > 0 {
+					hasSalt = true
+				}
+			}
+		}
+		if !hasCards {
+			t.Error("expected at least one cardlist with cards")
+		}
+		if !hasSalt {
+			t.Error("expected at least one card with Salt > 0")
+		}
+	})
+
+	t.Run("equipment", func(t *testing.T) {
+		if page := fetch(t, map[string]any{"list": "equipment"}); !hasNamedCard(page) {
+			t.Error("expected at least one card with a name")
+		}
+	})
+
+	t.Run("color U", func(t *testing.T) {
+		if page := fetch(t, map[string]any{"color": "U"}); !hasNamedCard(page) {
+			t.Error("expected at least one card with a name")
+		}
+	})
+}
+
 // contains checks if a string contains a substring.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)

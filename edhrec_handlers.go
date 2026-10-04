@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -46,6 +47,38 @@ func recFilterFromArgs(args map[string]any) (EDHRECRecFilter, error) {
 	}
 
 	return EDHRECRecFilter{Theme: theme, PriceTier: tier}, nil
+}
+
+// topCardsSlugFromArgs resolves the pages/top slug from get_edhrec_top_cards' mutually exclusive
+// "list" and "color" arguments, rejecting wrong types, unknown values, and both-or-neither.
+func topCardsSlugFromArgs(args map[string]any) (string, error) {
+	list, err := optionalStringArg(args, paramList)
+	if err != nil {
+		return "", err
+	}
+
+	color, err := optionalStringArg(args, paramColor)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case list != "" && color != "":
+		return "", fmt.Errorf("pass either %q or %q, not both", paramList, paramColor)
+	case list != "":
+		slug := strings.ToLower(list)
+		if !slices.Contains(topCardLists(), slug) {
+			return "", fmt.Errorf(
+				"argument %q must be one of %s; got %q", paramList, strings.Join(topCardLists(), ", "), list,
+			)
+		}
+
+		return slug, nil
+	case color != "":
+		return resolveTopColorSlug(color)
+	default:
+		return "", fmt.Errorf("one of %q or %q is required", paramList, paramColor)
+	}
 }
 
 func (s *MTGCommanderServer) handleGetEDHRECRecommendations(
@@ -118,7 +151,7 @@ func (s *MTGCommanderServer) handleGetEDHRECCombos(
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	slug, err := resolveComboIdentity(colors)
+	slug, err := resolveComboSlug(colors)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -176,4 +209,33 @@ func (s *MTGCommanderServer) handleGetEDHRECSetCards(
 		Msg("Successfully fetched EDHREC set cards")
 
 	return mcp.NewToolResultText(FormatSetCardsForDisplay(page, code, limit)), nil
+}
+
+func (s *MTGCommanderServer) handleGetEDHRECTopCards(
+	ctx context.Context,
+	request mcp.CallToolRequest,
+) (*mcp.CallToolResult, error) {
+	slug, err := topCardsSlugFromArgs(request.GetArguments())
+	if err != nil {
+		GetLogger().Error().Err(err).Str("tool", "get_edhrec_top_cards").Msg("Invalid arguments")
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	limit := request.GetInt("limit", defaultEDHRECLimit)
+	if limit < 0 {
+		return mcp.NewToolResultError("argument \"limit\" must be zero or greater"), nil
+	}
+
+	GetLogger().Info().
+		Str("tool", "get_edhrec_top_cards").
+		Str("page", slug).
+		Int("limit", limit).
+		Msg("Fetching EDHREC top cards")
+
+	page, err := getTopCardsPageWithURL(ctx, slug, s.edhrecBaseURL)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch EDHREC top cards page %q: %v", slug, err)), nil
+	}
+
+	return mcp.NewToolResultText(FormatTopCardsForDisplay(page, slug, limit)), nil
 }

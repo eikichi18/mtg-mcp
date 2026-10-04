@@ -18,6 +18,7 @@ const (
 	defaultEDHRECLimit   = 10
 	defaultSetCardsLimit = 25
 	wubrgOrder           = "wubrg"
+	topSlugMulticolor    = "multicolor"
 )
 
 // EDHRECResponse represents the top-level response structure.
@@ -203,26 +204,34 @@ func GetCommanderRecommendations(ctx context.Context, commanderName string) (*ED
 	return &page.Container.JSONDict, nil
 }
 
-// comboIdentity pairs a colour identity, written as lowercase letters in WUBRG order ("c" for
-// colorless), with the slug EDHREC keys its combo page by.
-type comboIdentity struct {
+// colorIdentity is one of the 32 colour identities EDHREC publishes pages for: its letters in WUBRG
+// order ("c" for colorless), its EDHREC name (also the combo page slug, pages/combos/<name>.json),
+// and the slug of its top-cards page (pages/top/<topSlug>.json), which differs for mono-colour.
+type colorIdentity struct {
 	letters string
-	slug    string
+	name    string
+	topSlug string
 }
 
-// comboIdentities lists the 32 colour identities EDHREC publishes combo pages for
-// (pages/combos.json), grouped by number of colours.
-func comboIdentities() []comboIdentity {
-	return []comboIdentity{
-		{"c", "colorless"},
-		{"w", "mono-white"}, {"u", "mono-blue"}, {"b", "mono-black"}, {"r", "mono-red"}, {"g", "mono-green"},
-		{"wu", "azorius"}, {"ub", "dimir"}, {"br", "rakdos"}, {"rg", "gruul"}, {"wg", "selesnya"},
-		{"wb", "orzhov"}, {"ur", "izzet"}, {"bg", "golgari"}, {"wr", "boros"}, {"ug", "simic"},
-		{"wub", "esper"}, {"ubr", "grixis"}, {"brg", "jund"}, {"wrg", "naya"}, {"wug", "bant"},
-		{"wbg", "abzan"}, {"wur", "jeskai"}, {"ubg", "sultai"}, {"wbr", "mardu"}, {"urg", "temur"},
-		{"wubr", "yore-tiller"}, {"ubrg", "glint-eye"}, {"wbrg", "dune-brood"},
-		{"wurg", "ink-treader"}, {"wubg", "witch-maw"},
-		{"wubrg", "five-color"},
+// colorIdentities lists EDHREC's 32 colour identities (pages/combos.json), grouped by number of
+// colours.
+func colorIdentities() []colorIdentity {
+	return []colorIdentity{
+		{"c", "colorless", "colorless"},
+		{"w", "mono-white", "white"}, {"u", "mono-blue", "blue"}, {"b", "mono-black", "black"},
+		{"r", "mono-red", "red"}, {"g", "mono-green", "green"},
+		{"wu", "azorius", "azorius"}, {"ub", "dimir", "dimir"}, {"br", "rakdos", "rakdos"},
+		{"rg", "gruul", "gruul"}, {"wg", "selesnya", "selesnya"}, {"wb", "orzhov", "orzhov"},
+		{"ur", "izzet", "izzet"}, {"bg", "golgari", "golgari"}, {"wr", "boros", "boros"},
+		{"ug", "simic", "simic"},
+		{"wub", "esper", "esper"}, {"ubr", "grixis", "grixis"}, {"brg", "jund", "jund"},
+		{"wrg", "naya", "naya"}, {"wug", "bant", "bant"}, {"wbg", "abzan", "abzan"},
+		{"wur", "jeskai", "jeskai"}, {"ubg", "sultai", "sultai"}, {"wbr", "mardu", "mardu"},
+		{"urg", "temur", "temur"},
+		{"wubr", "yore-tiller", "yore-tiller"}, {"ubrg", "glint-eye", "glint-eye"},
+		{"wbrg", "dune-brood", "dune-brood"}, {"wurg", "ink-treader", "ink-treader"},
+		{"wubg", "witch-maw", "witch-maw"},
+		{"wubrg", "five-color", "five-color"},
 	}
 }
 
@@ -252,33 +261,71 @@ func canonicalWUBRG(input string) (string, bool) {
 	return canonical.String(), true
 }
 
-// resolveComboIdentity turns a caller's colour identity — WUBRG letters in any order, "c" for
-// colorless, or an EDHREC identity name — into the slug of EDHREC's combo page. Anything else is
-// an error listing the valid names, so callers can reject it before any request.
-func resolveComboIdentity(colors string) (string, error) {
-	input := strings.ToLower(strings.TrimSpace(colors))
-	letters, isLetters := canonicalWUBRG(input)
+// resolveColorIdentity looks up a caller's colour identity — WUBRG letters in any order, "c" for
+// colorless, or an EDHREC identity name, any case — in colorIdentities.
+func resolveColorIdentity(input string) (colorIdentity, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	letters, isLetters := canonicalWUBRG(normalized)
 
-	identities := comboIdentities()
-	names := make([]string, 0, len(identities))
-	for _, identity := range identities {
-		if identity.slug == input || (isLetters && identity.letters == letters) {
-			return identity.slug, nil
+	for _, identity := range colorIdentities() {
+		if identity.name == normalized || (isLetters && identity.letters == letters) {
+			return identity, true
 		}
-		names = append(names, identity.slug)
 	}
 
-	return "", fmt.Errorf(
+	return colorIdentity{}, false
+}
+
+// colorIdentityNames returns the EDHREC names of colorIdentities, in table order.
+func colorIdentityNames() []string {
+	identities := colorIdentities()
+	names := make([]string, len(identities))
+	for i, identity := range identities {
+		names[i] = identity.name
+	}
+
+	return names
+}
+
+// invalidColorIdentityError reports a colour-identity argument that resolved to nothing, naming
+// the argument, the rejected value, and the accepted names.
+func invalidColorIdentityError(argName, got string, validNames []string) error {
+	return fmt.Errorf(
 		"argument %q must be WUBRG letters in any order (e.g. \"wu\", \"ubrg\"), \"c\" for colorless, "+
 			"or an EDHREC identity name; got %q. Valid names: %s",
-		paramColors, colors, strings.Join(names, ", "),
+		argName, got, strings.Join(validNames, ", "),
 	)
+}
+
+// resolveComboSlug turns get_edhrec_combos' "colors" argument into its combo page slug.
+func resolveComboSlug(colors string) (string, error) {
+	identity, ok := resolveColorIdentity(colors)
+	if !ok {
+		return "", invalidColorIdentityError(paramColors, colors, colorIdentityNames())
+	}
+
+	return identity.name, nil
+}
+
+// resolveTopColorSlug turns get_edhrec_top_cards' "color" argument into its top-cards page slug.
+// Besides the colour identities it accepts "multicolor", EDHREC's page of all multicolour cards.
+func resolveTopColorSlug(color string) (string, error) {
+	if strings.EqualFold(strings.TrimSpace(color), topSlugMulticolor) {
+		return topSlugMulticolor, nil
+	}
+
+	identity, ok := resolveColorIdentity(color)
+	if !ok {
+		return "", invalidColorIdentityError(paramColor, color, append(colorIdentityNames(), topSlugMulticolor))
+	}
+
+	return identity.topSlug, nil
 }
 
 // GetCombosForColors fetches combos for a colour identity given as WUBRG letters, "c", or an
 // EDHREC identity name.
 func GetCombosForColors(ctx context.Context, colors string) (*EDHRECComboData, error) {
-	slug, err := resolveComboIdentity(colors)
+	slug, err := resolveComboSlug(colors)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +334,7 @@ func GetCombosForColors(ctx context.Context, colors string) (*EDHRECComboData, e
 }
 
 // getCombosForIdentityWithURL fetches the combo page of an EDHREC identity slug (see
-// comboIdentities) from baseURL.
+// colorIdentities) from baseURL.
 func getCombosForIdentityWithURL(ctx context.Context, slug, baseURL string) (*EDHRECComboData, error) {
 	reqURL := fmt.Sprintf("%s/combos/%s.json", baseURL, url.PathEscape(slug))
 
@@ -312,6 +359,30 @@ func getSetCardsWithURL(ctx context.Context, setCode, baseURL string) (*EDHRECRe
 
 	var page EDHRECResponse
 	if err := fetchEDHRECPage(ctx, reqURL, "set page", &page); err != nil {
+		return nil, err
+	}
+
+	return &page, nil
+}
+
+// topCardLists returns the format-wide rankings get_edhrec_top_cards accepts as "list"; each is the
+// slug of pages/top/<slug>.json, as linked from edhrec.com/top.
+func topCardLists() []string {
+	return []string{
+		"salt", "game-changers", "week", "month", "year",
+		"artifacts", "auras", "battles", "color-fixing-lands", "creatures", "enchantments", "equipment",
+		"instants", "lands", "mana-artifacts", "planeswalkers", "sorceries", "utility-artifacts",
+		"utility-lands",
+	}
+}
+
+// getTopCardsPageWithURL fetches the first page of pages/top/<slug>.json from baseURL. slug must
+// already be resolved (see topCardsSlugFromArgs).
+func getTopCardsPageWithURL(ctx context.Context, slug, baseURL string) (*EDHRECResponse, error) {
+	reqURL := fmt.Sprintf("%s/top/%s.json", baseURL, url.PathEscape(slug))
+
+	var page EDHRECResponse
+	if err := fetchEDHRECPage(ctx, reqURL, "top cards", &page); err != nil {
 		return nil, err
 	}
 
@@ -371,7 +442,7 @@ func commanderThemeHint(ctx context.Context, commanderName, theme, baseURL strin
 
 // writeCardDeckStats writes one card's deck line. denominator is the deck universe the card
 // competes in: the commander's own deck count on recommendation pages, or the card's
-// potential_decks on set pages. A non-positive denominator prints the raw count only.
+// potential_decks on set and top-cards pages. A non-positive denominator prints the raw count only.
 func writeCardDeckStats(output *strings.Builder, numDecks, denominator int) {
 	if denominator <= 0 {
 		_, _ = fmt.Fprintf(output, "   - Decks: %d\n", numDecks)
@@ -383,8 +454,8 @@ func writeCardDeckStats(output *strings.Builder, numDecks, denominator int) {
 	_, _ = fmt.Fprintf(output, "   - Decks: %d of %d (%.1f%%)\n", numDecks, denominator, percentage)
 }
 
-// writeRecommendationCard writes one recommendation card's body, including its deck stats and
-// the optional synergy/salt lines.
+// writeRecommendationCard writes one card's body for recommendation, set and top-cards pages,
+// including its deck stats and the optional synergy/salt lines.
 func writeRecommendationCard(output *strings.Builder, index int, card EDHRECCardView, denominator int) {
 	_, _ = fmt.Fprintf(output, "%d. **%s**\n", index+1, card.Name)
 	writeCardDeckStats(output, card.NumDecks, denominator)
@@ -509,12 +580,23 @@ func FormatSetCardsForDisplay(page *EDHRECResponse, setCode string, limit int) s
 		_, _ = fmt.Fprintf(&output, "# EDHREC Set Overview: %s (%s)\n\n", title, setCode)
 	}
 
-	for _, cardList := range page.Container.JSONDict.CardLists {
+	writeCardLists(&output, page.Container.JSONDict.CardLists, limit)
+
+	return output.String()
+}
+
+// writeCardLists writes every non-empty cardlist, each capped at limit cards (limit <= 0 shows
+// all). A list with an empty header gets no heading of its own. Each card's deck share is measured
+// against its own potential_decks.
+func writeCardLists(output *strings.Builder, lists []EDHRECCardList, limit int) {
+	for _, cardList := range lists {
 		if len(cardList.CardViews) == 0 {
 			continue
 		}
 
-		_, _ = fmt.Fprintf(&output, "## %s (%d cards)\n\n", cardList.Header, len(cardList.CardViews))
+		if cardList.Header != "" {
+			_, _ = fmt.Fprintf(output, "## %s (%d cards)\n\n", cardList.Header, len(cardList.CardViews))
+		}
 
 		count := len(cardList.CardViews)
 		if limit > 0 && count > limit {
@@ -523,39 +605,27 @@ func FormatSetCardsForDisplay(page *EDHRECResponse, setCode string, limit int) s
 
 		for i := range count {
 			card := cardList.CardViews[i]
-			_, _ = fmt.Fprintf(&output, "%d. **%s**\n", i+1, card.Name)
-			writeCardDeckStats(&output, card.NumDecks, card.PotentialDecks)
-			output.WriteString("\n")
+			writeRecommendationCard(output, i, card, card.PotentialDecks)
 		}
 
 		if len(cardList.CardViews) > count {
-			_, _ = fmt.Fprintf(&output, "*...and %d more cards*\n\n", len(cardList.CardViews)-count)
+			_, _ = fmt.Fprintf(output, "*...and %d more cards*\n\n", len(cardList.CardViews)-count)
 		}
 	}
-
-	return output.String()
 }
 
-// getTopCardsForCategoryWithURL fetches top cards with a custom base URL.
-func getTopCardsForCategoryWithURL(
-	ctx context.Context,
-	category string,
-	page int,
-	baseURL string,
-) ([]EDHRECCardView, error) {
-	// Categories: salt, commanders, themes, etc.
-	reqURL := fmt.Sprintf("%s/top/%s--%d.json", baseURL, url.PathEscape(category), page)
+// FormatTopCardsForDisplay formats an EDHREC top-cards page for text display. slug is echoed so the
+// caller sees which page was resolved; limit caps each cardlist (limit <= 0 shows everything).
+func FormatTopCardsForDisplay(page *EDHRECResponse, slug string, limit int) string {
+	var output strings.Builder
 
-	var edhrecResp EDHRECResponse
-	if err := fetchEDHRECPage(ctx, reqURL, "top cards", &edhrecResp); err != nil {
-		return nil, err
+	title := page.Header
+	if title == "" {
+		title = "Top Cards"
 	}
+	_, _ = fmt.Fprintf(&output, "# EDHREC %s (%s)\n\n", title, slug)
 
-	// Extract cards from all card lists
-	var allCards []EDHRECCardView
-	for _, cardList := range edhrecResp.Container.JSONDict.CardLists {
-		allCards = append(allCards, cardList.CardViews...)
-	}
+	writeCardLists(&output, page.Container.JSONDict.CardLists, limit)
 
-	return allCards, nil
+	return output.String()
 }

@@ -17,7 +17,7 @@ var (
 )
 
 const (
-	totalToolCount               = 20
+	totalToolCount               = 21
 	totalResourceCount           = 3
 	maxSearchLimit               = 50
 	defaultSplitLimit            = 2
@@ -37,6 +37,8 @@ const (
 	paramTheme                   = "theme"
 	paramPriceTier               = "price_tier"
 	paramColors                  = "colors"
+	paramColor                   = "color"
+	paramList                    = "list"
 	faceFront                    = "front"
 	faceBack                     = "back"
 	defaultCardImageLanguage     = "en"
@@ -505,6 +507,31 @@ func (s *MTGCommanderServer) registerEDHRECTools(mcpServer *server.MCPServer) {
 		),
 	)
 	mcpServer.AddTool(edhrecSetCardsTool, s.handleGetEDHRECSetCards)
+
+	// Tool 21: Get EDHREC Top Cards
+	edhrecTopCardsTool := mcp.NewTool(
+		"get_edhrec_top_cards",
+		mcp.WithDescription(
+			"Get EDHREC's format-wide Commander rankings: the saltiest cards, the Game Changers, the most "+
+				"played cards of the past week/month/two years ('year'), the top cards of a card type, or "+
+				"the top cards of exactly one colour identity. Pass either 'list' or 'color', not both.",
+		),
+		mcp.WithString(paramList,
+			mcp.Enum(topCardLists()...),
+			mcp.Description("Ranking to show: 'salt', 'game-changers', 'week', 'month', 'year', or a card type"),
+		),
+		mcp.WithString(paramColor,
+			mcp.Description(
+				"Colour identity whose own cards to rank (cards of exactly that identity): WUBRG letters in any "+
+					"order (e.g. 'wu'), 'c' for colorless, an EDHREC name such as 'azorius' or 'mono-white', "+
+					"or 'multicolor' for all multicolour cards",
+			),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum cards to show per list (default: 10, 0 for no limit)"),
+		),
+	)
+	mcpServer.AddTool(edhrecTopCardsTool, s.handleGetEDHRECTopCards)
 }
 
 // registerResources registers MCP resources.
