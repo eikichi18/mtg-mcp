@@ -312,9 +312,9 @@ func TestEDHRECTopCardsE2E(t *testing.T) {
 			t.Fatalf("topCardsSlugFromArgs(%v) failed: %v", args, err)
 		}
 
-		page, err := getTopCardsPageWithURL(ctx, slug, defaultEDHRECBaseURL)
+		page, err := getRankingPageWithURL(ctx, rankingSectionTop, slug, defaultEDHRECBaseURL)
 		if err != nil {
-			t.Fatalf("getTopCardsPageWithURL(%q) failed: %v", slug, err)
+			t.Fatalf("getRankingPageWithURL(%q, %q) failed: %v", rankingSectionTop, slug, err)
 		}
 
 		return page
@@ -365,6 +365,49 @@ func TestEDHRECTopCardsE2E(t *testing.T) {
 			t.Error("expected at least one card with a name")
 		}
 	})
+}
+
+// TestEDHRECTopCommandersE2E resolves get_edhrec_top_commanders arguments and fetches the real pages:
+// one slug verified live when the tool was written (month) and one that was not (ub → dimir).
+func TestEDHRECTopCommandersE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	for _, tt := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"period month", map[string]any{"period": "month"}},
+		{"color ub", map[string]any{"color": "ub"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			slug, err := topCommandersSlugFromArgs(tt.args)
+			if err != nil {
+				t.Fatalf("topCommandersSlugFromArgs(%v) failed: %v", tt.args, err)
+			}
+
+			page, err := getRankingPageWithURL(ctx, rankingSectionCommanders, slug, defaultEDHRECBaseURL)
+			if err != nil {
+				t.Fatalf("getRankingPageWithURL(%q, %q) failed: %v", rankingSectionCommanders, slug, err)
+			}
+
+			found := false
+			for _, cardList := range page.Container.JSONDict.CardLists {
+				for _, commander := range cardList.CardViews {
+					if commander.Name != "" && commander.NumDecks > 0 {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Errorf("expected at least one commander with a name and NumDecks > 0 on %q", slug)
+			}
+		})
+	}
 }
 
 // contains checks if a string contains a substring.

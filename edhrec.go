@@ -11,14 +11,16 @@ import (
 )
 
 const (
-	percentageMultiplier = 100.0
-	priceTierBudget      = "budget"
-	priceTierExpensive   = "expensive"
-	maxThemesListed      = 15
-	defaultEDHRECLimit   = 10
-	defaultSetCardsLimit = 25
-	wubrgOrder           = "wubrg"
-	topSlugMulticolor    = "multicolor"
+	percentageMultiplier     = 100.0
+	priceTierBudget          = "budget"
+	priceTierExpensive       = "expensive"
+	maxThemesListed          = 15
+	defaultEDHRECLimit       = 10
+	defaultSetCardsLimit     = 25
+	wubrgOrder               = "wubrg"
+	topSlugMulticolor        = "multicolor"
+	rankingSectionTop        = "top"
+	rankingSectionCommanders = "commanders"
 )
 
 // EDHRECResponse represents the top-level response structure.
@@ -322,6 +324,17 @@ func resolveTopColorSlug(color string) (string, error) {
 	return identity.topSlug, nil
 }
 
+// resolveCommanderColorSlug turns get_edhrec_top_commanders' "color" argument into the slug of its
+// commanders page, which is the identity's EDHREC name (pages/commanders/mono-white.json).
+func resolveCommanderColorSlug(color string) (string, error) {
+	identity, ok := resolveColorIdentity(color)
+	if !ok {
+		return "", invalidColorIdentityError(paramColor, color, colorIdentityNames())
+	}
+
+	return identity.name, nil
+}
+
 // GetCombosForColors fetches combos for a colour identity given as WUBRG letters, "c", or an
 // EDHREC identity name.
 func GetCombosForColors(ctx context.Context, colors string) (*EDHRECComboData, error) {
@@ -376,13 +389,20 @@ func topCardLists() []string {
 	}
 }
 
-// getTopCardsPageWithURL fetches the first page of pages/top/<slug>.json from baseURL. slug must
-// already be resolved (see topCardsSlugFromArgs).
-func getTopCardsPageWithURL(ctx context.Context, slug, baseURL string) (*EDHRECResponse, error) {
-	reqURL := fmt.Sprintf("%s/top/%s.json", baseURL, url.PathEscape(slug))
+// commanderPeriods returns the time windows get_edhrec_top_commanders accepts as "period"; each is
+// the slug of pages/commanders/<slug>.json. EDHREC's "year" page covers the past two years.
+func commanderPeriods() []string {
+	return []string{"week", "month", "year"}
+}
+
+// getRankingPageWithURL fetches the first page of an EDHREC ranking, pages/<section>/<slug>.json,
+// from baseURL. section is rankingSectionTop or rankingSectionCommanders; slug must already be
+// resolved from fixed values (see exclusiveSelectorSlug), never taken from raw input.
+func getRankingPageWithURL(ctx context.Context, section, slug, baseURL string) (*EDHRECResponse, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s.json", baseURL, section, url.PathEscape(slug))
 
 	var page EDHRECResponse
-	if err := fetchEDHRECPage(ctx, reqURL, "top cards", &page); err != nil {
+	if err := fetchEDHRECPage(ctx, reqURL, section+" ranking", &page); err != nil {
 		return nil, err
 	}
 
@@ -580,22 +600,22 @@ func FormatSetCardsForDisplay(page *EDHRECResponse, setCode string, limit int) s
 		_, _ = fmt.Fprintf(&output, "# EDHREC Set Overview: %s (%s)\n\n", title, setCode)
 	}
 
-	writeCardLists(&output, page.Container.JSONDict.CardLists, limit)
+	writeCardLists(&output, page.Container.JSONDict.CardLists, limit, "cards")
 
 	return output.String()
 }
 
-// writeCardLists writes every non-empty cardlist, each capped at limit cards (limit <= 0 shows
-// all). A list with an empty header gets no heading of its own. Each card's deck share is measured
-// against its own potential_decks.
-func writeCardLists(output *strings.Builder, lists []EDHRECCardList, limit int) {
+// writeCardLists writes every non-empty cardlist, each capped at limit entries (limit <= 0 shows
+// all). noun names the entries in the counts ("cards", "commanders"). A list with an empty header
+// gets no heading of its own. Each entry's deck share is measured against its own potential_decks.
+func writeCardLists(output *strings.Builder, lists []EDHRECCardList, limit int, noun string) {
 	for _, cardList := range lists {
 		if len(cardList.CardViews) == 0 {
 			continue
 		}
 
 		if cardList.Header != "" {
-			_, _ = fmt.Fprintf(output, "## %s (%d cards)\n\n", cardList.Header, len(cardList.CardViews))
+			_, _ = fmt.Fprintf(output, "## %s (%d %s)\n\n", cardList.Header, len(cardList.CardViews), noun)
 		}
 
 		count := len(cardList.CardViews)
@@ -609,23 +629,35 @@ func writeCardLists(output *strings.Builder, lists []EDHRECCardList, limit int) 
 		}
 
 		if len(cardList.CardViews) > count {
-			_, _ = fmt.Fprintf(output, "*...and %d more cards*\n\n", len(cardList.CardViews)-count)
+			_, _ = fmt.Fprintf(output, "*...and %d more %s*\n\n", len(cardList.CardViews)-count, noun)
 		}
 	}
 }
 
-// FormatTopCardsForDisplay formats an EDHREC top-cards page for text display. slug is echoed so the
-// caller sees which page was resolved; limit caps each cardlist (limit <= 0 shows everything).
-func FormatTopCardsForDisplay(page *EDHRECResponse, slug string, limit int) string {
+// formatRankingPage formats an EDHREC ranking page for text display. slug is echoed so the caller
+// sees which page was resolved; fallbackTitle is used when the page has no header; noun names the
+// entries in counts; limit caps each cardlist (limit <= 0 shows everything).
+func formatRankingPage(page *EDHRECResponse, slug string, limit int, fallbackTitle, noun string) string {
 	var output strings.Builder
 
 	title := page.Header
 	if title == "" {
-		title = "Top Cards"
+		title = fallbackTitle
 	}
 	_, _ = fmt.Fprintf(&output, "# EDHREC %s (%s)\n\n", title, slug)
 
-	writeCardLists(&output, page.Container.JSONDict.CardLists, limit)
+	writeCardLists(&output, page.Container.JSONDict.CardLists, limit, noun)
 
 	return output.String()
+}
+
+// FormatTopCardsForDisplay formats an EDHREC top-cards page (pages/top) for text display.
+func FormatTopCardsForDisplay(page *EDHRECResponse, slug string, limit int) string {
+	return formatRankingPage(page, slug, limit, "Top Cards", "cards")
+}
+
+// FormatTopCommandersForDisplay formats an EDHREC top-commanders page (pages/commanders/<period or
+// identity>) for text display. Commander pages carry no potential_decks, so deck counts are raw.
+func FormatTopCommandersForDisplay(page *EDHRECResponse, slug string, limit int) string {
+	return formatRankingPage(page, slug, limit, "Top Commanders", "commanders")
 }

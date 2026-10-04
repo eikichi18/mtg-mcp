@@ -17,7 +17,7 @@ var (
 )
 
 const (
-	totalToolCount               = 21
+	totalToolCount               = 22
 	totalResourceCount           = 3
 	maxSearchLimit               = 50
 	defaultSplitLimit            = 2
@@ -39,6 +39,7 @@ const (
 	paramColors                  = "colors"
 	paramColor                   = "color"
 	paramList                    = "list"
+	paramPeriod                  = "period"
 	faceFront                    = "front"
 	faceBack                     = "back"
 	defaultCardImageLanguage     = "en"
@@ -532,6 +533,29 @@ func (s *MTGCommanderServer) registerEDHRECTools(mcpServer *server.MCPServer) {
 		),
 	)
 	mcpServer.AddTool(edhrecTopCardsTool, s.handleGetEDHRECTopCards)
+
+	// Tool 22: Get EDHREC Top Commanders
+	edhrecTopCommandersTool := mcp.NewTool(
+		"get_edhrec_top_commanders",
+		mcp.WithDescription(
+			"Get EDHREC's most played commanders: over the past week, month or two years ('year'), or among "+
+				"the commanders of exactly one colour identity. Pass either 'period' or 'color', not both.",
+		),
+		mcp.WithString(paramPeriod,
+			mcp.Enum(commanderPeriods()...),
+			mcp.Description("Time window: 'week', 'month', or 'year' (EDHREC's past two years)"),
+		),
+		mcp.WithString(paramColor,
+			mcp.Description(
+				"Colour identity of the commanders to rank: WUBRG letters in any order (e.g. 'wu'), 'c' for "+
+					"colorless, or an EDHREC name such as 'azorius', 'mono-white', 'five-color'",
+			),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum commanders to show (default: 10, 0 for all 100)"),
+		),
+	)
+	mcpServer.AddTool(edhrecTopCommandersTool, s.handleGetEDHRECTopCommanders)
 }
 
 // registerResources registers MCP resources.

@@ -587,3 +587,92 @@ func TestHandleGetEDHRECTopCards(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleGetEDHRECTopCommanders(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		resp := EDHRECResponse{
+			Header: "Top Azorius Commanders",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header: "Azorius Commanders",
+							CardViews: []EDHRECCardView{
+								{Name: "Shorikai, Genesis Engine", NumDecks: 21031},
+								{Name: "Brago, King Eternal", NumDecks: 3000},
+							},
+						},
+					},
+				},
+			},
+		}
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/commanders/azorius.json") {
+				t.Errorf("Request URL = %v, want suffix /commanders/azorius.json", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		t.Cleanup(ts.Close)
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+		res, err := s.handleGetEDHRECTopCommanders(context.Background(), toolRequest(map[string]any{
+			"color": "UW",
+			"limit": float64(1),
+		}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected error result: %s", resultText(t, res))
+		}
+		text := resultText(t, res)
+		if !strings.Contains(text, "Shorikai, Genesis Engine") {
+			t.Errorf("expected first commander in output:\n%s", text)
+		}
+		if strings.Contains(text, "Brago, King Eternal") {
+			t.Errorf("limit 1 should hide the second commander:\n%s", text)
+		}
+		if !strings.Contains(text, "*...and 1 more commanders*") {
+			t.Errorf("expected truncation footer:\n%s", text)
+		}
+	})
+
+	t.Run("upstream 403", func(t *testing.T) {
+		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusForbidden, nil)}
+		res, err := s.handleGetEDHRECTopCommanders(context.Background(), toolRequest(map[string]any{"period": "week"}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !res.IsError {
+			t.Error("expected error result")
+		}
+		if !strings.Contains(resultText(t, res), "week") {
+			t.Errorf("expected page slug in error message:\n%s", resultText(t, res))
+		}
+	})
+
+	t.Run("invalid arguments never reach EDHREC", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("unexpected EDHREC request %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(ts.Close)
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+
+		for _, args := range []map[string]any{
+			{},
+			{"period": "week", "color": "wu"},
+			{"period": "day"},
+			{"color": "multicolor"},
+			{"period": float64(7)},
+			{"period": "week", "limit": float64(-1)},
+		} {
+			res, err := s.handleGetEDHRECTopCommanders(context.Background(), toolRequest(args))
+			if err != nil {
+				t.Fatalf("args %v: unexpected error: %v", args, err)
+			}
+			if !res.IsError {
+				t.Errorf("args %v: expected error result, got %s", args, resultText(t, res))
+			}
+		}
+	})
+}

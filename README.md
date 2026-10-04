@@ -114,7 +114,7 @@ information, rulings, pricing, deck validation tools, and multi-platform deck im
 
 3. **get_glossary_term** - Get a Comprehensive Rules glossary definition by term.
 
-#### EDHREC Meta Data (3 tools)
+#### EDHREC Meta Data (4 tools)
 
 1. **get_edhrec_recommendations** – Get EDHREC recommendations for a commander
     - High-synergy cards with synergy scores
@@ -135,6 +135,10 @@ information, rulings, pricing, deck validation tools, and multi-platform deck im
     - Saltiest cards, Game Changers, most played cards of the past week/month/two years
     - Top cards by card type (creatures, equipment, utility lands, …)
     - Top cards of exactly one colour identity (letters such as `wu`, or names such as `azorius`)
+
+4. **get_edhrec_top_commanders** – Most played commanders on EDHREC
+    - Over the past week, month or two years
+    - Among the commanders of one colour identity (letters such as `wu`, or names such as `azorius`)
 
 ### Resources (Data Sources)
 
@@ -289,6 +293,7 @@ Once connected to Claude Desktop, you can ask questions like:
 - "Get me the top 5-color combos for WUBRG"
 - "What are the saltiest cards in Commander?"
 - "Show me the most played Azorius cards on EDHREC"
+- "Which commanders are most played this month on EDHREC?"
 
 ## Architecture
 

@@ -49,10 +49,16 @@ func recFilterFromArgs(args map[string]any) (EDHRECRecFilter, error) {
 	return EDHRECRecFilter{Theme: theme, PriceTier: tier}, nil
 }
 
-// topCardsSlugFromArgs resolves the pages/top slug from get_edhrec_top_cards' mutually exclusive
-// "list" and "color" arguments, rejecting wrong types, unknown values, and both-or-neither.
-func topCardsSlugFromArgs(args map[string]any) (string, error) {
-	list, err := optionalStringArg(args, paramList)
+// exclusiveSelectorSlug resolves a ranking page slug from two mutually exclusive arguments: listKey,
+// whose value must be one of listValues, or "color", resolved by resolveColor. Wrong types, unknown
+// values, and both-or-neither are errors.
+func exclusiveSelectorSlug(
+	args map[string]any,
+	listKey string,
+	listValues []string,
+	resolveColor func(string) (string, error),
+) (string, error) {
+	list, err := optionalStringArg(args, listKey)
 	if err != nil {
 		return "", err
 	}
@@ -64,21 +70,32 @@ func topCardsSlugFromArgs(args map[string]any) (string, error) {
 
 	switch {
 	case list != "" && color != "":
-		return "", fmt.Errorf("pass either %q or %q, not both", paramList, paramColor)
+		return "", fmt.Errorf("pass either %q or %q, not both", listKey, paramColor)
 	case list != "":
 		slug := strings.ToLower(list)
-		if !slices.Contains(topCardLists(), slug) {
+		if !slices.Contains(listValues, slug) {
 			return "", fmt.Errorf(
-				"argument %q must be one of %s; got %q", paramList, strings.Join(topCardLists(), ", "), list,
+				"argument %q must be one of %s; got %q", listKey, strings.Join(listValues, ", "), list,
 			)
 		}
 
 		return slug, nil
 	case color != "":
-		return resolveTopColorSlug(color)
+		return resolveColor(color)
 	default:
-		return "", fmt.Errorf("one of %q or %q is required", paramList, paramColor)
+		return "", fmt.Errorf("one of %q or %q is required", listKey, paramColor)
 	}
+}
+
+// topCardsSlugFromArgs resolves get_edhrec_top_cards' "list" / "color" arguments to a pages/top slug.
+func topCardsSlugFromArgs(args map[string]any) (string, error) {
+	return exclusiveSelectorSlug(args, paramList, topCardLists(), resolveTopColorSlug)
+}
+
+// topCommandersSlugFromArgs resolves get_edhrec_top_commanders' "period" / "color" arguments to a
+// pages/commanders slug.
+func topCommandersSlugFromArgs(args map[string]any) (string, error) {
+	return exclusiveSelectorSlug(args, paramPeriod, commanderPeriods(), resolveCommanderColorSlug)
 }
 
 func (s *MTGCommanderServer) handleGetEDHRECRecommendations(
@@ -211,13 +228,26 @@ func (s *MTGCommanderServer) handleGetEDHRECSetCards(
 	return mcp.NewToolResultText(FormatSetCardsForDisplay(page, code, limit)), nil
 }
 
-func (s *MTGCommanderServer) handleGetEDHRECTopCards(
+// rankingTool describes one EDHREC ranking tool: its MCP name, the page section it reads, what its
+// pages rank (for logs and errors), how it resolves arguments to a slug, and how it formats a page.
+type rankingTool struct {
+	name         string
+	section      string
+	subject      string
+	slugFromArgs func(map[string]any) (string, error)
+	format       func(*EDHRECResponse, string, int) string
+}
+
+// handleRankingTool validates a ranking tool's arguments before any request, fetches the resolved
+// page, and formats it.
+func (s *MTGCommanderServer) handleRankingTool(
 	ctx context.Context,
 	request mcp.CallToolRequest,
+	tool rankingTool,
 ) (*mcp.CallToolResult, error) {
-	slug, err := topCardsSlugFromArgs(request.GetArguments())
+	slug, err := tool.slugFromArgs(request.GetArguments())
 	if err != nil {
-		GetLogger().Error().Err(err).Str("tool", "get_edhrec_top_cards").Msg("Invalid arguments")
+		GetLogger().Error().Err(err).Str("tool", tool.name).Msg("Invalid arguments")
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
@@ -227,15 +257,43 @@ func (s *MTGCommanderServer) handleGetEDHRECTopCards(
 	}
 
 	GetLogger().Info().
-		Str("tool", "get_edhrec_top_cards").
+		Str("tool", tool.name).
 		Str("page", slug).
 		Int("limit", limit).
-		Msg("Fetching EDHREC top cards")
+		Msg("Fetching EDHREC " + tool.subject)
 
-	page, err := getTopCardsPageWithURL(ctx, slug, s.edhrecBaseURL)
+	page, err := getRankingPageWithURL(ctx, tool.section, slug, s.edhrecBaseURL)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch EDHREC top cards page %q: %v", slug, err)), nil
+		return mcp.NewToolResultError(
+			fmt.Sprintf("Failed to fetch EDHREC %s page %q: %v", tool.subject, slug, err),
+		), nil
 	}
 
-	return mcp.NewToolResultText(FormatTopCardsForDisplay(page, slug, limit)), nil
+	return mcp.NewToolResultText(tool.format(page, slug, limit)), nil
+}
+
+func (s *MTGCommanderServer) handleGetEDHRECTopCards(
+	ctx context.Context,
+	request mcp.CallToolRequest,
+) (*mcp.CallToolResult, error) {
+	return s.handleRankingTool(ctx, request, rankingTool{
+		name:         "get_edhrec_top_cards",
+		section:      rankingSectionTop,
+		subject:      "top cards",
+		slugFromArgs: topCardsSlugFromArgs,
+		format:       FormatTopCardsForDisplay,
+	})
+}
+
+func (s *MTGCommanderServer) handleGetEDHRECTopCommanders(
+	ctx context.Context,
+	request mcp.CallToolRequest,
+) (*mcp.CallToolResult, error) {
+	return s.handleRankingTool(ctx, request, rankingTool{
+		name:         "get_edhrec_top_commanders",
+		section:      rankingSectionCommanders,
+		subject:      "top commanders",
+		slugFromArgs: topCommandersSlugFromArgs,
+		format:       FormatTopCommandersForDisplay,
+	})
 }

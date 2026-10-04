@@ -416,8 +416,72 @@ func TestTopCardsSlugFromArgs(t *testing.T) {
 	}
 }
 
-func TestGetTopCardsPageWithURL(t *testing.T) {
-	t.Run("requests the slug page and decodes it", func(t *testing.T) {
+func TestTopCommandersSlugFromArgs(t *testing.T) {
+	resolves := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"period week", map[string]any{"period": "week"}, "week"},
+		{"period trimmed and lowercased", map[string]any{"period": " Year "}, "year"},
+		{"color letters", map[string]any{"color": "wu"}, "azorius"},
+		{"color mono letter", map[string]any{"color": "W"}, "mono-white"},
+		{"color mono name", map[string]any{"color": "mono-white"}, "mono-white"},
+		{"color colorless", map[string]any{"color": "c"}, "colorless"},
+		{"color unordered letters", map[string]any{"color": "GUR"}, "temur"},
+	}
+	for _, tt := range resolves {
+		t.Run("resolves "+tt.name, func(t *testing.T) {
+			got, err := topCommandersSlugFromArgs(tt.args)
+			if err != nil {
+				t.Fatalf("topCommandersSlugFromArgs(%v) error = %v", tt.args, err)
+			}
+			if got != tt.want {
+				t.Errorf("topCommandersSlugFromArgs(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+
+	rejects := []struct {
+		name         string
+		args         map[string]any
+		wantContains []string
+	}{
+		{"neither", map[string]any{}, nil},
+		{"both", map[string]any{"period": "week", "color": "wu"}, nil},
+		{"unknown period", map[string]any{"period": "day"}, []string{`"day"`, "month"}},
+		{"multicolor", map[string]any{"color": "multicolor"}, []string{`"color"`, "glint-eye"}},
+		{"unknown color", map[string]any{"color": "xyz"}, nil},
+		{"period wrong type", map[string]any{"period": float64(7)}, nil},
+		{"color wrong type", map[string]any{"color": false}, nil},
+	}
+	for _, tt := range rejects {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			got, err := topCommandersSlugFromArgs(tt.args)
+			if err == nil {
+				t.Fatalf("topCommandersSlugFromArgs(%v) = %q, want error", tt.args, got)
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not contain %s: %v", want, err)
+				}
+			}
+		})
+	}
+
+	t.Run("multicolor is not offered as a valid name", func(t *testing.T) {
+		_, err := topCommandersSlugFromArgs(map[string]any{"color": "multicolor"})
+		if err == nil {
+			t.Fatal("expected an error for multicolor")
+		}
+		if n := strings.Count(err.Error(), "multicolor"); n != 1 {
+			t.Errorf("multicolor appears %d times, want exactly once (the rejected input): %v", n, err)
+		}
+	})
+}
+
+func TestGetRankingPageWithURL(t *testing.T) {
+	t.Run("top/azorius", func(t *testing.T) {
 		mock := EDHRECResponse{
 			Header: "Top Azorius Cards",
 			Container: EDHRECContainer{
@@ -437,9 +501,9 @@ func TestGetTopCardsPageWithURL(t *testing.T) {
 		}))
 		defer server.Close()
 
-		page, err := getTopCardsPageWithURL(context.Background(), "azorius", server.URL)
+		page, err := getRankingPageWithURL(context.Background(), rankingSectionTop, "azorius", server.URL)
 		if err != nil {
-			t.Fatalf("getTopCardsPageWithURL() error = %v", err)
+			t.Fatalf("getRankingPageWithURL() error = %v", err)
 		}
 		if page.Header != "Top Azorius Cards" {
 			t.Errorf("header = %q, want %q", page.Header, "Top Azorius Cards")
@@ -450,13 +514,50 @@ func TestGetTopCardsPageWithURL(t *testing.T) {
 		}
 	})
 
+	t.Run("commanders/mono-white", func(t *testing.T) {
+		mock := EDHRECResponse{
+			Header: "Top Mono-White Commanders",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header:    "Mono-White Commanders",
+							CardViews: []EDHRECCardView{{Name: "Light-Paws, Emperor's Voice", NumDecks: 9000}},
+						},
+					},
+				},
+			},
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/commanders/mono-white.json") {
+				t.Errorf("Request URL = %v, want suffix /commanders/mono-white.json", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(mock)
+		}))
+		defer server.Close()
+
+		page, err := getRankingPageWithURL(context.Background(), rankingSectionCommanders, "mono-white", server.URL)
+		if err != nil {
+			t.Fatalf("getRankingPageWithURL() error = %v", err)
+		}
+		if page.Header != "Top Mono-White Commanders" {
+			t.Errorf("header = %q, want %q", page.Header, "Top Mono-White Commanders")
+		}
+		lists := page.Container.JSONDict.CardLists
+		if len(lists) != 1 || len(lists[0].CardViews) != 1 ||
+			lists[0].CardViews[0].Name != "Light-Paws, Emperor's Voice" || lists[0].CardViews[0].NumDecks != 9000 {
+			t.Errorf("cardlists not decoded: %+v", lists)
+		}
+	})
+
 	t.Run("403 returns an error", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 		}))
 		defer server.Close()
 
-		if _, err := getTopCardsPageWithURL(context.Background(), "mono-white", server.URL); err == nil {
+		_, err := getRankingPageWithURL(context.Background(), rankingSectionCommanders, "white", server.URL)
+		if err == nil {
 			t.Error("expected an error for a 403 page")
 		}
 	})
@@ -922,6 +1023,68 @@ func TestFormatTopCardsForDisplay(t *testing.T) {
 		}
 		if strings.Contains(got, "more cards") {
 			t.Errorf("limit 0 should not truncate, got:\n%s", got)
+		}
+	})
+}
+
+func TestFormatTopCommandersForDisplay(t *testing.T) {
+	t.Run("colour page with limit", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Header: "Top Azorius Commanders",
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header: "Azorius Commanders",
+							CardViews: []EDHRECCardView{
+								{Name: "Shorikai, Genesis Engine", NumDecks: 21031, PotentialDecks: 0},
+								{
+									Name:           "Abdel Adrian, Gorion's Ward // Candlekeep Sage",
+									NumDecks:       4398,
+									PotentialDecks: 0,
+								},
+								{Name: "Brago, King Eternal", NumDecks: 3000, PotentialDecks: 0},
+							},
+						},
+					},
+				},
+			},
+		}
+		got := FormatTopCommandersForDisplay(page, "azorius", 2)
+		for _, want := range []string{
+			"# EDHREC Top Azorius Commanders (azorius)",
+			"## Azorius Commanders (3 commanders)",
+			"- Decks: 21031\n",
+			"Abdel Adrian, Gorion's Ward // Candlekeep Sage",
+			"*...and 1 more commanders*",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+		for _, unwanted := range []string{"cards", " of ", "NaN"} {
+			if strings.Contains(got, unwanted) {
+				t.Errorf("unexpected %q in:\n%s", unwanted, got)
+			}
+		}
+	})
+
+	t.Run("empty header falls back to Top Commanders", func(t *testing.T) {
+		page := &EDHRECResponse{
+			Container: EDHRECContainer{
+				JSONDict: EDHRECData{
+					CardLists: []EDHRECCardList{
+						{
+							Header:    "Past Week",
+							CardViews: []EDHRECCardView{{Name: "Shorikai, Genesis Engine", NumDecks: 500}},
+						},
+					},
+				},
+			},
+		}
+		got := FormatTopCommandersForDisplay(page, "week", 10)
+		if !strings.HasPrefix(got, "# EDHREC Top Commanders (week)") {
+			t.Errorf("expected fallback title, got:\n%s", got)
 		}
 	})
 }
