@@ -36,6 +36,7 @@ const (
 	paramFace                    = "face"
 	paramTheme                   = "theme"
 	paramPriceTier               = "price_tier"
+	paramColors                  = "colors"
 	faceFront                    = "front"
 	faceBack                     = "back"
 	defaultCardImageLanguage     = "en"
@@ -472,10 +473,11 @@ func (s *MTGCommanderServer) registerEDHRECTools(mcpServer *server.MCPServer) {
 	edhrecCombosTool := mcp.NewTool("get_edhrec_combos",
 		mcp.WithDescription("Get popular card combos for a color combination from EDHREC"),
 		mcp.WithString(
-			"colors",
+			paramColors,
 			mcp.Required(),
 			mcp.Description(
-				"Color combination (w=white, u=blue, b=black, r=red, g=green, e.g., 'wu' for Azorius, 'wubrg' for 5-color)",
+				"Color identity: WUBRG letters in any order (e.g. 'wu' for Azorius, 'wubrg' for five-color), "+
+					"'c' for colorless, or an EDHREC name such as 'azorius', 'mono-white', 'glint-eye', 'five-color'",
 			),
 		),
 		mcp.WithNumber("limit",

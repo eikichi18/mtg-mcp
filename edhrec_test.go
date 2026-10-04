@@ -252,73 +252,147 @@ func TestGetSetCardsWithURL(t *testing.T) {
 	}
 }
 
-func TestGetCombosForColors(t *testing.T) {
-	tests := []struct {
-		name         string
-		colors       string
-		mockResponse EDHRECComboResponse
-		mockStatus   int
-		wantErr      bool
+func TestResolveComboIdentity(t *testing.T) {
+	resolves := []struct {
+		colors string
+		want   string
 	}{
-		{
-			name:   "colorless combos",
-			colors: "colorless",
-			mockResponse: EDHRECComboResponse{
-				Container: EDHRECComboContainer{
-					JSONDict: EDHRECComboData{
-						CardLists: []EDHRECComboList{
-							{
-								Header: "Basalt Monolith + Forsaken Monument",
-								CardViews: []EDHRECCardView{
-									{Name: "Basalt Monolith"},
-									{Name: "Forsaken Monument"},
-								},
-								Combo: &EDHRECCombo{
-									ComboID: "combo-1",
-									Results: []string{"Infinite colorless mana"},
-								},
-							},
-						},
-					},
-				},
-			},
-			mockStatus: http.StatusOK,
-			wantErr:    false,
-		},
-		{
-			name:       "404 not found",
-			colors:     "invalid",
-			mockStatus: http.StatusNotFound,
-			wantErr:    true,
-		},
+		{"wu", "azorius"},
+		{"UW", "azorius"},
+		{" ub ", "dimir"},
+		{"ubrg", "glint-eye"},
+		{"GRBU", "glint-eye"},
+		{"wubrg", "five-color"},
+		{"c", "colorless"},
+		{"C", "colorless"},
+		{"azorius", "azorius"},
+		{"Mono-White", "mono-white"},
+		{"five-color", "five-color"},
+		{"colorless", "colorless"},
+		{"gur", "temur"},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tt.mockStatus)
-				if tt.mockStatus == http.StatusOK {
-					_ = json.NewEncoder(w).Encode(tt.mockResponse)
-				}
-			}))
-			defer server.Close()
-
-			ctx := context.Background()
-			got, err := getCombosForColorsWithURL(ctx, tt.colors, server.URL)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetCombosForColors() error = %v, wantErr %v", err, tt.wantErr)
-				return
+	for _, tt := range resolves {
+		t.Run("resolves "+tt.colors, func(t *testing.T) {
+			got, err := resolveComboIdentity(tt.colors)
+			if err != nil {
+				t.Fatalf("resolveComboIdentity(%q) error = %v", tt.colors, err)
 			}
-
-			if !tt.wantErr && got != nil {
-				if len(got.CardLists) != len(tt.mockResponse.Container.JSONDict.CardLists) {
-					t.Errorf("GetCombosForColors() combo count = %v, want %v",
-						len(got.CardLists), len(tt.mockResponse.Container.JSONDict.CardLists))
-				}
+			if got != tt.want {
+				t.Errorf("resolveComboIdentity(%q) = %q, want %q", tt.colors, got, tt.want)
 			}
 		})
 	}
+
+	for _, colors := range []string{"", "   ", "xyz", "wwu", "cw", "w u", "azorius-x"} {
+		t.Run(fmt.Sprintf("rejects %q", colors), func(t *testing.T) {
+			got, err := resolveComboIdentity(colors)
+			if err == nil {
+				t.Fatalf("resolveComboIdentity(%q) = %q, want error", colors, got)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q", colors)) {
+				t.Errorf("error does not quote the input %q: %v", colors, err)
+			}
+			if !strings.Contains(err.Error(), "glint-eye") {
+				t.Errorf("error does not list the valid names: %v", err)
+			}
+		})
+	}
+}
+
+// TestComboIdentitiesMatchEDHRECIndex checks the identity table against independent oracles: the
+// slugs linked from pages/combos.json (snapshot 2026-10-04) and every WUBRG subset plus "c".
+func TestComboIdentitiesMatchEDHRECIndex(t *testing.T) {
+	indexSlugs := []string{
+		"abzan", "azorius", "bant", "boros", "colorless", "dimir", "dune-brood", "esper", "five-color",
+		"glint-eye", "golgari", "grixis", "gruul", "ink-treader", "izzet", "jeskai", "jund", "mardu",
+		"mono-black", "mono-blue", "mono-green", "mono-red", "mono-white", "naya", "orzhov", "rakdos",
+		"selesnya", "simic", "sultai", "temur", "witch-maw", "yore-tiller",
+	}
+
+	wantLetters := map[string]bool{"c": true}
+	for mask := 1; mask < 1<<len(wubrgOrder); mask++ {
+		var letters strings.Builder
+		for i, letter := range wubrgOrder {
+			if mask&(1<<i) != 0 {
+				letters.WriteRune(letter)
+			}
+		}
+		wantLetters[letters.String()] = true
+	}
+
+	identities := comboIdentities()
+	gotSlugs := map[string]bool{}
+	gotLetters := map[string]bool{}
+	for _, identity := range identities {
+		if gotSlugs[identity.slug] {
+			t.Errorf("duplicate slug %q", identity.slug)
+		}
+		if gotLetters[identity.letters] {
+			t.Errorf("duplicate letters %q", identity.letters)
+		}
+		gotSlugs[identity.slug] = true
+		gotLetters[identity.letters] = true
+	}
+
+	if len(identities) != len(indexSlugs) {
+		t.Errorf("table has %d identities, EDHREC index has %d", len(identities), len(indexSlugs))
+	}
+	for _, slug := range indexSlugs {
+		if !gotSlugs[slug] {
+			t.Errorf("EDHREC slug %q missing from the table", slug)
+		}
+	}
+	for letters := range wantLetters {
+		if !gotLetters[letters] {
+			t.Errorf("canonical letters %q missing from the table", letters)
+		}
+	}
+	for letters := range gotLetters {
+		if !wantLetters[letters] {
+			t.Errorf("table key %q is not canonical WUBRG letters", letters)
+		}
+	}
+}
+
+func TestGetCombosForIdentityWithURL(t *testing.T) {
+	t.Run("requests the slug page and decodes it", func(t *testing.T) {
+		mock := EDHRECComboResponse{
+			Container: EDHRECComboContainer{
+				JSONDict: EDHRECComboData{
+					CardLists: []EDHRECComboList{
+						{Header: "Combo A", CardViews: []EDHRECCardView{{Name: "Card A"}}},
+						{Header: "Combo B", CardViews: []EDHRECCardView{{Name: "Card B"}}},
+					},
+				},
+			},
+		}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/combos/azorius.json") {
+				t.Errorf("Request URL = %v, want suffix /combos/azorius.json", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(mock)
+		}))
+		defer server.Close()
+
+		got, err := getCombosForIdentityWithURL(context.Background(), "azorius", server.URL)
+		if err != nil {
+			t.Fatalf("getCombosForIdentityWithURL() error = %v", err)
+		}
+		if len(got.CardLists) != len(mock.Container.JSONDict.CardLists) {
+			t.Errorf("combo count = %d, want %d", len(got.CardLists), len(mock.Container.JSONDict.CardLists))
+		}
+	})
+
+	t.Run("upstream 403 is an error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer server.Close()
+
+		if _, err := getCombosForIdentityWithURL(context.Background(), "azorius", server.URL); err == nil {
+			t.Error("expected error for HTTP 403")
+		}
+	})
 }
 
 func TestFormatCommanderRecsForDisplay(t *testing.T) {

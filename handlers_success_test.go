@@ -337,9 +337,16 @@ func TestHandleGetEDHRECCombos(t *testing.T) {
 				},
 			},
 		}
-		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusOK, resp)}
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/combos/azorius.json") {
+				t.Errorf("Request URL = %v, want suffix /combos/azorius.json", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		t.Cleanup(ts.Close)
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
 		res, err := s.handleGetEDHRECCombos(context.Background(), toolRequest(map[string]any{
-			"colors": "colorless",
+			"colors": "UW",
 			"limit":  float64(5),
 		}))
 		if err != nil {
@@ -351,10 +358,29 @@ func TestHandleGetEDHRECCombos(t *testing.T) {
 	})
 
 	t.Run("failure", func(t *testing.T) {
-		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusNotFound, nil)}
-		res, _ := s.handleGetEDHRECCombos(context.Background(), toolRequest(map[string]any{"colors": "zz"}))
+		s := &MTGCommanderServer{edhrecBaseURL: jsonServer(t, http.StatusForbidden, nil)}
+		res, _ := s.handleGetEDHRECCombos(context.Background(), toolRequest(map[string]any{"colors": "wu"}))
 		if !res.IsError {
 			t.Error("expected error result")
+		}
+	})
+
+	t.Run("invalid colors never reach EDHREC", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("unexpected EDHREC request %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(ts.Close)
+		s := &MTGCommanderServer{edhrecBaseURL: ts.URL}
+
+		for _, colors := range []any{"xyz", "wwu", "cw", "   ", float64(42)} {
+			res, err := s.handleGetEDHRECCombos(context.Background(), toolRequest(map[string]any{"colors": colors}))
+			if err != nil {
+				t.Fatalf("colors %v: unexpected error: %v", colors, err)
+			}
+			if !res.IsError {
+				t.Errorf("colors %v: expected error result, got %s", colors, resultText(t, res))
+			}
 		}
 	})
 }

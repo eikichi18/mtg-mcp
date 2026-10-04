@@ -17,6 +17,7 @@ const (
 	maxThemesListed      = 15
 	defaultEDHRECLimit   = 10
 	defaultSetCardsLimit = 25
+	wubrgOrder           = "wubrg"
 )
 
 // EDHRECResponse represents the top-level response structure.
@@ -96,6 +97,8 @@ type EDHRECCombo struct {
 	ComboID string   `json:"comboId"`
 	Cards   []string `json:"cards"`
 	Results []string `json:"results"`
+	// Colors is the combo page's colour identity in upper-case letters ("WU"); "" on colorless.
+	Colors string `json:"colors"`
 }
 
 // EDHRECRecFilter narrows a commander recommendation request. An empty field means "no filter".
@@ -200,16 +203,93 @@ func GetCommanderRecommendations(ctx context.Context, commanderName string) (*ED
 	return &page.Container.JSONDict, nil
 }
 
-// GetCombosForColors fetches combos for a color combination.
-func GetCombosForColors(ctx context.Context, colors string) (*EDHRECComboData, error) {
-	return getCombosForColorsWithURL(ctx, colors, defaultEDHRECBaseURL)
+// comboIdentity pairs a colour identity, written as lowercase letters in WUBRG order ("c" for
+// colorless), with the slug EDHREC keys its combo page by.
+type comboIdentity struct {
+	letters string
+	slug    string
 }
 
-// getCombosForColorsWithURL fetches combos with a custom base URL.
-func getCombosForColorsWithURL(ctx context.Context, colors, baseURL string) (*EDHRECComboData, error) {
-	// Color codes: w (white), u (blue), b (black), r (red), g (green)
-	// Examples: "wu" (azorius), "ubr" (grixis), "wubrg" (5-color)
-	reqURL := fmt.Sprintf("%s/combos/%s.json", baseURL, url.PathEscape(strings.ToLower(colors)))
+// comboIdentities lists the 32 colour identities EDHREC publishes combo pages for
+// (pages/combos.json), grouped by number of colours.
+func comboIdentities() []comboIdentity {
+	return []comboIdentity{
+		{"c", "colorless"},
+		{"w", "mono-white"}, {"u", "mono-blue"}, {"b", "mono-black"}, {"r", "mono-red"}, {"g", "mono-green"},
+		{"wu", "azorius"}, {"ub", "dimir"}, {"br", "rakdos"}, {"rg", "gruul"}, {"wg", "selesnya"},
+		{"wb", "orzhov"}, {"ur", "izzet"}, {"bg", "golgari"}, {"wr", "boros"}, {"ug", "simic"},
+		{"wub", "esper"}, {"ubr", "grixis"}, {"brg", "jund"}, {"wrg", "naya"}, {"wug", "bant"},
+		{"wbg", "abzan"}, {"wur", "jeskai"}, {"ubg", "sultai"}, {"wbr", "mardu"}, {"urg", "temur"},
+		{"wubr", "yore-tiller"}, {"ubrg", "glint-eye"}, {"wbrg", "dune-brood"},
+		{"wurg", "ink-treader"}, {"wubg", "witch-maw"},
+		{"wubrg", "five-color"},
+	}
+}
+
+// canonicalWUBRG reorders a lowercase colour-letter string into WUBRG order. It reports false
+// for an empty string, a repeated letter, or any character outside w/u/b/r/g; "c" (colorless)
+// is returned unchanged.
+func canonicalWUBRG(input string) (string, bool) {
+	if input == "c" {
+		return input, true
+	}
+
+	var canonical strings.Builder
+	for _, letter := range wubrgOrder {
+		occurrences := strings.Count(input, string(letter))
+		if occurrences > 1 {
+			return "", false
+		}
+		if occurrences == 1 {
+			canonical.WriteRune(letter)
+		}
+	}
+
+	if canonical.Len() == 0 || canonical.Len() != len(input) {
+		return "", false
+	}
+
+	return canonical.String(), true
+}
+
+// resolveComboIdentity turns a caller's colour identity — WUBRG letters in any order, "c" for
+// colorless, or an EDHREC identity name — into the slug of EDHREC's combo page. Anything else is
+// an error listing the valid names, so callers can reject it before any request.
+func resolveComboIdentity(colors string) (string, error) {
+	input := strings.ToLower(strings.TrimSpace(colors))
+	letters, isLetters := canonicalWUBRG(input)
+
+	identities := comboIdentities()
+	names := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		if identity.slug == input || (isLetters && identity.letters == letters) {
+			return identity.slug, nil
+		}
+		names = append(names, identity.slug)
+	}
+
+	return "", fmt.Errorf(
+		"argument %q must be WUBRG letters in any order (e.g. \"wu\", \"ubrg\"), \"c\" for colorless, "+
+			"or an EDHREC identity name; got %q. Valid names: %s",
+		paramColors, colors, strings.Join(names, ", "),
+	)
+}
+
+// GetCombosForColors fetches combos for a colour identity given as WUBRG letters, "c", or an
+// EDHREC identity name.
+func GetCombosForColors(ctx context.Context, colors string) (*EDHRECComboData, error) {
+	slug, err := resolveComboIdentity(colors)
+	if err != nil {
+		return nil, err
+	}
+
+	return getCombosForIdentityWithURL(ctx, slug, defaultEDHRECBaseURL)
+}
+
+// getCombosForIdentityWithURL fetches the combo page of an EDHREC identity slug (see
+// comboIdentities) from baseURL.
+func getCombosForIdentityWithURL(ctx context.Context, slug, baseURL string) (*EDHRECComboData, error) {
+	reqURL := fmt.Sprintf("%s/combos/%s.json", baseURL, url.PathEscape(slug))
 
 	var comboResp EDHRECComboResponse
 	if err := fetchEDHRECPage(ctx, reqURL, "combos", &comboResp); err != nil {

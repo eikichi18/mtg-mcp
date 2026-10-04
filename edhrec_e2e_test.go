@@ -56,43 +56,59 @@ func TestEDHRECCommanderRecommendationsE2E(t *testing.T) {
 		data.Card.Name, data.Card.NumDecks, len(data.CardLists))
 }
 
-// TestEDHRECCombosE2E tests real EDHREC API for color combos.
+// TestEDHRECCombosE2E tests real EDHREC API for colour identities given as letters: one mapping
+// verified live when the table was written (wu → azorius) and one that was not (GUR → temur).
+// Each page's combo.colors must equal the requested identity.
 func TestEDHRECCombosE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	for _, colors := range []string{"wu", "GUR"} {
+		t.Run(colors, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-	// Test with colorless which typically has well-known combos
-	data, err := GetCombosForColors(ctx, "colorless")
-	if err != nil {
-		t.Fatalf("GetCombosForColors() failed: %v", err)
+			data, err := GetCombosForColors(ctx, colors)
+			if err != nil {
+				t.Fatalf("GetCombosForColors(%q) failed: %v", colors, err)
+			}
+
+			if len(data.CardLists) == 0 {
+				t.Fatalf("Expected at least one combo for %q", colors)
+			}
+
+			comboList := data.CardLists[0]
+			if len(comboList.CardViews) == 0 {
+				t.Error("Expected combo to have card views")
+			}
+
+			if comboList.Header == "" {
+				t.Error("Expected combo to have a header")
+			}
+
+			if len(comboList.CardViews) > 0 && comboList.CardViews[0].Name == "" {
+				t.Error("Expected card view to have a name")
+			}
+
+			want, ok := canonicalWUBRG(strings.ToLower(colors))
+			if !ok {
+				t.Fatalf("test input %q is not valid letters", colors)
+			}
+			for i, entry := range data.CardLists {
+				if entry.Combo == nil {
+					continue
+				}
+				got, valid := canonicalWUBRG(strings.ToLower(entry.Combo.Colors))
+				if !valid || got != want {
+					t.Errorf("combo %d has colors %q, want identity %q", i, entry.Combo.Colors, want)
+				}
+			}
+
+			t.Logf("✓ Fetched %d combos for %q", len(data.CardLists), colors)
+			t.Logf("  First combo: %s", comboList.Header)
+		})
 	}
-
-	// Verify response structure (new format uses CardLists)
-	if len(data.CardLists) == 0 {
-		t.Fatal("Expected at least one combo in colorless")
-	}
-
-	// Check first combo structure
-	comboList := data.CardLists[0]
-	if len(comboList.CardViews) == 0 {
-		t.Error("Expected combo to have card views")
-	}
-
-	if comboList.Header == "" {
-		t.Error("Expected combo to have a header")
-	}
-
-	// Verify we have actual card names
-	if len(comboList.CardViews) > 0 && comboList.CardViews[0].Name == "" {
-		t.Error("Expected card view to have a name")
-	}
-
-	t.Logf("✓ Successfully fetched %d combos for colorless", len(data.CardLists))
-	t.Logf("  First combo: %s", comboList.Header)
 }
 
 // TestEDHRECSanitizationE2E tests that card name sanitization works with real API.

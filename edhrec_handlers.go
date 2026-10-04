@@ -113,14 +113,19 @@ func (s *MTGCommanderServer) handleGetEDHRECCombos(
 	ctx context.Context,
 	request mcp.CallToolRequest,
 ) (*mcp.CallToolResult, error) {
-	colors, err := request.RequireString("colors")
+	colors, err := request.RequireString(paramColors)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	slug, err := resolveComboIdentity(colors)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	limit := request.GetInt("limit", defaultEDHRECLimit)
 
-	data, err := getCombosForColorsWithURL(ctx, colors, s.edhrecBaseURL)
+	data, err := getCombosForIdentityWithURL(ctx, slug, s.edhrecBaseURL)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch EDHREC combos: %v", err)), nil
 	}
